@@ -1,0 +1,327 @@
+# AIR3view Studio
+
+Ứng dụng chạy trên máy để biến video YouTube hoặc file local thành video review dọc **1080 × 1920, 30 fps**. Backend Python/FastAPI, giao diện React/TypeScript, dựng bằng FFmpeg; AI phân tích qua Codex CLI hoặc OpenAI API, giọng đọc qua OmniVoice riêng.
+
+## Tính năng
+
+- **Một video tóm tắt:** chọn highlight từ toàn bộ nguồn, ưu tiên diễn biến nhanh, căng thẳng và đối thoại nổi bật có bằng chứng, giữ bối cảnh và kết quả.
+- **Nhiều phần:** đặt số phần và thời lượng mong muốn mỗi phần trước khi chạy.
+- Lời dẫn có **Mở đầu → Diễn biến → Kết thúc**. Mở đầu phát sau hook và một đoạn hình gốc; kết thúc nêu kết quả và bài học.
+- Hình tiếp tục chạy khi AI nói; tiếng gốc mặc định tắt trong đoạn AI, bật lại sau đó.
+- Ngôn ngữ đầu ra cho title, lời AI và phụ đề; có tiếng Việt và English.
+- Phụ đề highlight từ đang đọc, chỉnh màu/bật tắt; xuất MP4, ASS và SRT.
+- Sửa lời dẫn, phụ đề, crop, title, nền; lưu dự án trên máy, cache kết quả, hủy/thử lại tác vụ.
+
+## 1. Yêu cầu trước khi cài
+
+Hướng dẫn bên dưới dành cho **máy Windows 10/11 64-bit**. Windows là môi trường đã kiểm thử; chưa xác nhận toàn bộ quy trình trên macOS/Linux.
+
+| Thành phần | Yêu cầu / ghi chú |
+| --- | --- |
+| Git | Dùng để clone và cập nhật mã nguồn |
+| Python | Khuyến nghị 3.11 hoặc 3.12, bản 64-bit. Bản phát triển đã chạy với 3.10, nhưng yt-dlp cảnh báo ngừng hỗ trợ phiên bản này |
+| Node.js | 22.x; dùng cùng npm để cài và build frontend |
+| FFmpeg | Có encoder libx264, AAC và filter `ass`/libass; thêm thư mục `bin` vào PATH |
+| Bộ nhớ | Nên có ít nhất 16 GB RAM, ưu tiên 32 GB khi chạy TTS và ASR local cùng lúc. Đây là khuyến nghị vận hành, không phải bảo đảm đủ cho mọi model/video |
+| GPU | Không bắt buộc cho AIR3view. OmniVoice chạy CPU được nhưng chậm; cấu hình CUDA cần PyTorch phù hợp GPU/driver |
+| Ổ đĩa | Chừa nhiều GB cho môi trường Python, model và video. Nguồn, proxy, WAV và bản xuất cùng tồn tại; nhu cầu tăng theo số dự án |
+| Internet | Cần khi cài gói/tải model, tải YouTube và gọi nhà cung cấp AI |
+| AI | Chọn **một**: tài khoản dùng Codex CLI đã đăng nhập, hoặc OpenAI API key với model hỗ trợ ảnh và Structured Outputs |
+
+**Lỗi đã biết trên máy 8 GB:** ASR và OmniVoice cùng giữ model có thể làm cạn RAM/bộ nhớ ảo (`mkl_malloc`, `bad allocation`, `MemoryError`). Bản hiện tại **chưa tự chia audio thành các đoạn nhỏ để giảm RAM và chưa tự tháo/nạp OmniVoice**. Xem [cách xử lý thiếu bộ nhớ](#thiếu-bộ-nhớ).
+
+Cài Git, Python và Node từ trang của nhà cung cấp. FFmpeg cho Windows có các bản build được liên kết tại [trang tải FFmpeg](https://ffmpeg.org/download.html); chọn bản có libass. Mở PowerShell mới sau khi cập nhật PATH, rồi kiểm tra:
+
+```powershell
+git --version
+python --version
+node --version
+npm.cmd --version
+ffmpeg -version
+ffmpeg -hide_banner -filters | Select-String '\bass\s'
+```
+
+Lệnh cuối phải hiện filter `ass`. Nếu `python` mở Microsoft Store, chọn đúng Python đã cài hoặc dùng Python Launcher `py -3.11` ở bước tạo môi trường bên dưới.
+
+## 2. Clone và cài AIR3view
+
+Nên đặt mã nguồn trong thư mục local, ví dụ `C:\Projects`, để tránh tranh chấp đồng bộ SQLite/video.
+
+```powershell
+New-Item -ItemType Directory -Force C:\Projects | Out-Null
+Set-Location C:\Projects
+git clone https://github.com/insofanhh/AIR3view.git
+Set-Location AIR3view
+
+# Chọn Python rõ ràng nếu máy có nhiều phiên bản.
+py -3.11 -m venv .venv
+.\Setup-AIR3view.ps1
+```
+
+Nếu không có `py`, dùng `python -m venv .venv` với Python đúng phiên bản. Không sao chép `.venv` từ máy khác; hãy tạo lại trên máy đích.
+
+Nếu PowerShell chặn script, có thể chạy các lệnh cài thủ công dưới đây; không cần thay Execution Policy của hệ thống:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+npm.cmd --prefix frontend ci
+npm.cmd --prefix frontend run build
+```
+
+`Setup-AIR3view.ps1` kiểm tra công cụ cần thiết, tạo `.venv` nếu chưa có, cài thư viện và build giao diện. Nếu cần chỉ rõ đường dẫn Python lúc tạo môi trường:
+
+```powershell
+.\Setup-AIR3view.ps1 -Python 'C:\Path\To\Python311\python.exe'
+```
+
+**Script này không cài OmniVoice, FFmpeg hoặc đăng nhập AI.** Tiếp tục bước 3 và 4. Nếu dùng đường dẫn FFmpeg riêng, đặt `$env:FFMPEG_PATH` trước khi chạy setup/server.
+
+## 3. Cài và chạy OmniVoice riêng
+
+AIR3view không đóng gói model OmniVoice. Dùng môi trường Python riêng để tránh xung đột PyTorch/Gradio với backend. Hướng dẫn gốc: [OmniVoice](https://github.com/k2-fsa/OmniVoice).
+
+Mở PowerShell thứ hai:
+
+```powershell
+Set-Location C:\Projects
+git clone https://github.com/k2-fsa/OmniVoice.git
+Set-Location OmniVoice
+
+# Revision đã dùng để tích hợp hai endpoint Gradio của AIR3view.
+git checkout 08be0b4ccbac3e13e374e86fbfead4b4cac343e2
+py -3.11 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+```
+
+Chọn **một** bản PyTorch. Ví dụ CPU:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+```
+
+Hoặc NVIDIA với driver tương thích CUDA 12.8:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
+```
+
+Các lệnh phiên bản ở trên dựa trên [hướng dẫn PyTorch](https://pytorch.org/get-started/previous-versions/#v280). Chọn build phù hợp máy; AIR3view không tự cài CUDA. Sau đó cài OmniVoice và Gradio đã dùng khi tích hợp:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m pip install gradio==6.9.0
+.\.venv\Scripts\python.exe -c "import torch; print('CUDA available:', torch.cuda.is_available())"
+```
+
+Chạy trên CPU:
+
+```powershell
+.\.venv\Scripts\omnivoice-demo.exe --ip 127.0.0.1 --port 8001 --device cpu --no-asr
+```
+
+Hoặc, khi CUDA hoạt động và GPU đủ bộ nhớ:
+
+```powershell
+.\.venv\Scripts\omnivoice-demo.exe --ip 127.0.0.1 --port 8001 --device cuda:0 --no-asr
+```
+
+Lần đầu sẽ tải model; chờ đến khi dịch vụ sẵn sàng rồi mở [OmniVoice local](http://127.0.0.1:8001). Giữ terminal này chạy. `Ctrl+C` dừng dịch vụ và giải phóng model.
+
+`--no-asr` bỏ model nhận dạng riêng của OmniVoice để tiết kiệm bộ nhớ. Với chế độ clone, nhập đúng lời nói của audio tham chiếu. AIR3view vẫn dùng faster-whisper riêng để nhận dạng nguồn và canh phụ đề.
+
+Đây là bộ phiên bản tham chiếu, chưa phải lockfile toàn bộ phụ thuộc của OmniVoice. Khi cập nhật OmniVoice, kiểm tra lại hai endpoint `/_design_fn` và `/_clone_fn` trước khi chạy dự án lớn.
+
+## 4. Kết nối nhà cung cấp AI
+
+### Cách A — Codex CLI
+
+Cài và đăng nhập trên **máy mới** theo [hướng dẫn Codex chính thức](https://github.com/openai/codex):
+
+```powershell
+npm.cmd install -g @openai/codex
+codex --version
+codex login
+```
+
+Mở lại terminal chạy AIR3view sau khi cài CLI. Trong tab **Kết nối**, chọn **Codex trên máy này**. Có thể để trống Model để dùng mặc định CLI. Bản tích hợp hiện dùng `codex exec`, ảnh và JSON Schema; CLI cần hỗ trợ `--ignore-user-config`, `--output-schema`, `--image` và các cờ feature của adapter. Nếu CLI báo cờ không được hỗ trợ, cập nhật CLI hoặc chọn OpenAI API; không cần cài Codex desktop để chạy server này.
+
+Đăng nhập dùng tài khoản và hạn mức của chính bạn. Không sao chép file đăng nhập/token của máy cũ vào repository.
+
+### Cách B — OpenAI API
+
+Trong **Kết nối**, chọn **OpenAI API key**, nhập key, bấm **Áp dụng key** và nhập tên model có khả năng đọc ảnh/Structured Outputs. Adapter gửi request đến Responses API. Chi phí API phụ thuộc model và lượng ảnh/transcript.
+
+Key nhập trong giao diện chỉ giữ trong bộ nhớ server đến khi dừng ứng dụng. Có thể đặt biến môi trường `OPENAI_API_KEY` trước khi chạy server. Không ghi key vào mã nguồn, README hoặc JSON dự án. Ứng dụng **không tự đọc file `.env`**.
+
+## 5. Khởi động và kiểm tra
+
+Quay lại terminal AIR3view:
+
+```powershell
+Set-Location C:\Projects\AIR3view
+.\Start-AIR3view.ps1
+```
+
+Hoặc không dùng script PowerShell:
+
+```powershell
+.\.venv\Scripts\python.exe run.py
+```
+
+Mở **[http://127.0.0.1:8000](http://127.0.0.1:8000)**. Trong một terminal khác có thể kiểm tra:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8000/api/health
+Invoke-RestMethod http://127.0.0.1:8000/api/omnivoice
+```
+
+`health.ok` và `health.ffmpeg` phải là `True`; kiểm tra OmniVoice trả `ok=True` khi dịch vụ 8001 đang chạy. Nếu dùng API key, `health.codex=False` không phải lỗi.
+
+Server chỉ nghe localhost. Chạy **một instance AIR3view cho mỗi thư mục dữ liệu**; không thêm nhiều worker. Khi có job, ứng dụng giữ Windows không tự ngủ và khôi phục trạng thái sau khi job kết thúc/hủy/lỗi. Lần đầu nên thử nguồn ngắn trước khi xử lý video dài.
+
+## 6. Quy trình sử dụng
+
+1. Nhập link YouTube hoặc file video; chờ bước chuẩn bị proxy, WAV và khung hình hoàn tất.
+2. Mở **Đầu ra**, chọn một trong hai chế độ:
+   - **Một video tóm tắt:** đặt thời lượng mong muốn 30–1800 giây.
+   - **Nhiều phần:** đặt số phần 1–100 và thời lượng mong muốn mỗi phần; luồng biên tập hiện yêu cầu tối thiểu 30 giây/phần.
+3. Chọn ngôn ngữ text + voice và độ dài đoạn hình gốc trước lời mở đầu (mặc định 3 giây).
+4. Bấm **Chạy toàn bộ**, hoặc chạy từng bước để duyệt: **AI phân tích & biên kịch → Tạo giọng → Dựng video**. Nguồn đã chuẩn bị được dùng lại.
+5. Trong **Cảnh**, xem mốc nguồn và lý do chọn highlight. Trong **Lời AI**, duyệt các nhãn Mở đầu/Diễn biến/Kết thúc, sửa câu rồi tạo lại giọng.
+6. Trong **Bố cục**, chỉnh title, nền, crop, cỡ phụ đề và màu highlight. Bật làm mờ phụ đề dính sẵn nếu chữ nguồn chồng với chữ mới.
+7. **Dựng thử** tạo phần đầu ở 360×640; **Xuất video** dựng thành phẩm 1080×1920. Tải MP4/ASS/SRT ở bảng xuất hoặc mở bản dựng cạnh trình phát.
+
+Thời lượng đặt là **mục tiêu tối đa đã bao gồm hook**. AI cắt theo câu chuyện nên kết quả có thể ngắn hơn, không thêm phần ngoài số yêu cầu, không lặp/đóng băng hình để lấp thời gian. Nguồn quá ngắn hoặc lời dài hơn cảnh sẽ báo lỗi thay vì cắt mất lời.
+
+AI đọc các đoạn của toàn bộ nguồn trước khi lập bản biên tập tổng thể. Cấu trúc ba phần xuyên suốt từ video đầu đến video cuối, không bắt buộc lặp lại phần giới thiệu ở mỗi file. Bài học phải dựa trên nội dung; kết quả chưa rõ cần được nói rõ. Cần duyệt lại tên riêng và kết luận do AI tạo.
+
+Đổi chế độ, số phần, thời lượng, ngôn ngữ, hook hoặc quy tắc sẽ yêu cầu phân tích lại trước khi xuất/tạo giọng cho bản chọn cảnh mới. Dự án cũ vẫn xem được; chọn chế độ ở tab Đầu ra trước khi chạy mới. Phân tích lại thay lời dẫn hiện tại, nên sao lưu nếu cần giữ bản cũ.
+
+### Phụ đề và âm thanh
+
+- Highlight chỉ tô từ đang được đọc; khoảng nghỉ trả về màu thường. Câu thiếu mốc từ đủ tin cậy giữ chữ thường. MP4/ASS có màu; SRT chỉ giữ nội dung và thời gian.
+- Bấm **Canh highlight theo âm thanh** sau khi sửa phụ đề hoặc để cập nhật dự án cũ; dùng lại WAV đã có.
+- Tiếng gốc mặc định 0% lúc AI kể, trở lại sau đó. Ngoài lời AI, âm thanh gốc không được dịch lồng tiếng lại.
+- Preview mô phỏng bố cục/lịch phát; MP4 do FFmpeg/libass dựng là bản chuẩn. Gain âm thanh lớn hơn 100% chỉ thể hiện đầy đủ khi render.
+- Các video mẫu đã dính title/sub/nền cần được dùng làm tham chiếu; để dựng sạch hãy nhập nguồn gốc.
+
+Editor tự lưu; `Ctrl+S` lưu ngay, Undo giữ tối đa 30 thay đổi trong phiên. Cache giữ các kết quả đã hoàn thành, nhưng bấm Thử lại không tự giải quyết lỗi thiếu RAM/hạn mức.
+
+## 7. Dữ liệu, sao lưu và chuyển máy
+
+```text
+AIR3view/
+├── backend/              API, AI, nhận dạng, timeline và render
+├── frontend/             React/TypeScript; package-lock.json
+├── scripts/              Kiểm tra và xác minh output
+├── tests/                Kiểm thử, có test FFmpeg thực
+├── data/                 Dữ liệu local, không đưa vào Git
+│   ├── studio.sqlite3    Metadata dự án và trạng thái job
+│   ├── models/           Model ASR đã tải
+│   └── <project_id>/     Nguồn, proxy, WAV, frames, giọng, cache và bản xuất
+├── requirements.txt      Các phụ thuộc Python trực tiếp được ghim phiên bản
+├── Setup-AIR3view.ps1
+└── Start-AIR3view.ps1
+```
+
+**Clone GitHub chỉ lấy mã nguồn và tài liệu**, không lấy video, giọng mẫu, dự án SQLite, model hay môi trường Python.
+
+Để mang dự án đã làm sang máy khác:
+
+1. Chờ/hủy job và dừng AIR3view trên máy cũ, rồi sao chép **toàn bộ `data/`**. Khi sao lưu SQLite, giữ cả các file `-wal`/`-shm` nếu còn tồn tại; không sao chép riêng DB lúc server đang ghi.
+2. Cài phần mềm trên máy mới theo hướng dẫn ở trên, rồi dừng server máy mới.
+3. Chép `data/` vào thư mục repository mới, hoặc chỉ định thư mục bằng `AIR3VIEW_DATA`. Không ghi đè dữ liệu có sẵn của máy đích; sao lưu trước hoặc dùng thư mục khác.
+4. Khởi động lại AIR3view, cấu hình AI/OmniVoice và kiểm tra dự án. Tác vụ đang dở sẽ được đánh dấu gián đoạn để thử lại.
+
+JSON tải từ editor chỉ là manifest để tham khảo, không chứa media và chưa có chức năng nhập lại toàn bộ dự án bằng JSON. Model OmniVoice thường nằm trong cache Hugging Face riêng; có thể tải lại trên máy mới. Không chuyển `.venv` hoặc `node_modules` giữa các máy.
+
+## 8. Cập nhật và kiểm thử
+
+Dừng server trước khi cập nhật; sao lưu `data/`:
+
+```powershell
+git pull --ff-only
+.\Setup-AIR3view.ps1
+.\Start-AIR3view.ps1
+```
+
+Kiểm thử local không gọi AI/TTS online:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe scripts/check.py
+npm.cmd --prefix frontend run build
+```
+
+Kết quả gần nhất trước khi đóng gói: **62 test đạt**, gồm dựng FFmpeg thật, chọn cảnh/ánh xạ timeline, mute audio, karaoke, số phần, cache và API; frontend build đạt. Đây không phải xác nhận đã cài thử trên mọi cấu hình máy mới. Các test biên kịch dùng phản hồi AI giả lập; nội dung thực vẫn cần duyệt.
+
+Kiểm tra Codex thực, **có sử dụng hạn mức và gửi ảnh được chỉ định tới AI**:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/check-codex.py 'C:\Path\To\test-image.jpg'
+```
+
+Phát triển giao diện: chạy backend và `npm.cmd --prefix frontend run dev` ở hai terminal. Vite ở `http://127.0.0.1:5173` proxy API/media về cổng 8000. Khi dùng server production, build frontend rồi restart backend.
+
+## 9. Xử lý lỗi thường gặp
+
+### Thiếu bộ nhớ
+
+`mkl_malloc: failed to allocate memory`, `bad allocation`, `Unable to allocate ... MiB` hoặc `MemoryError` là hết bộ nhớ khả dụng; không phải lỗi link video hay API key.
+
+- Kiểm tra Task Manager, đóng ứng dụng nặng và dừng dịch vụ OmniVoice nếu chưa cần TTS. Khởi động lại backend sau lỗi để giải phóng model ASR đang giữ.
+- Chọn ASR `tiny`/`base` trong Kết nối nếu chấp nhận giảm chất lượng, ưu tiên phụ đề có sẵn hoặc nhập SRT để giảm nhận dạng nguồn ban đầu.
+- Trên máy RAM thấp, chạy từng bước thay cho Chạy toàn bộ: phân tích khi OmniVoice đã dừng; lưu kết quả, restart backend khi không còn job, rồi mới bật OmniVoice và tạo giọng. Tạo giọng/canh karaoke vẫn dùng ASR và có thể tiếp tục thiếu RAM.
+- Kiểm tra dung lượng trống ổ hệ thống/bộ nhớ ảo; tăng bộ nhớ ảo không bảo đảm hiệu năng và không thay thế RAM.
+- Nếu máy vẫn cạn bộ nhớ, chuyển sang máy nhiều RAM hơn. Bản này chưa có cơ chế tự luân phiên model hoặc ASR theo chunk để bảo đảm hoạt động trên máy 8 GB.
+
+### Không thấy giao diện / chỉ thấy thông báo build
+
+Chạy `npm.cmd --prefix frontend ci`, `npm.cmd --prefix frontend run build`, rồi restart server. `frontend/dist` được tạo trên máy mới, không nằm trong Git.
+
+### OmniVoice chưa kết nối / không tạo được giọng
+
+Mở `http://127.0.0.1:8001`, xem terminal OmniVoice đã nạp model xong chưa. Chạy đúng cổng, không bật chia sẻ public. Kiểm tra URL trong Kết nối là `http://127.0.0.1:8001`. Nếu API báo thiếu endpoint, dùng revision/Gradio tham chiếu ở bước 3. Với clone và `--no-asr`, phải có text của audio mẫu.
+
+### Codex hết hạn mức hoặc không tìm thấy lệnh
+
+Kiểm tra `codex --version`, đăng nhập trên máy đó và mở lại terminal server sau khi sửa PATH. Hết hạn mức thì chờ khôi phục hoặc chọn OpenAI API; các phân tích đã hoàn thành vẫn ở cache. CLI không nhận cờ có thể không tương thích adapter hiện tại.
+
+### YouTube không tải được / thiếu JavaScript runtime
+
+Thử nhập file local để tiếp tục. Nội dung yêu cầu đăng nhập/giới hạn truy cập có thể không tải được. yt-dlp có thể cần runtime JavaScript và bản extractor tương thích; xem [hướng dẫn yt-dlp](https://github.com/yt-dlp/yt-dlp#dependencies). Không gửi cookie/tài khoản qua repository. Cập nhật gói có chủ đích và kiểm tra lại pipeline sau thay đổi.
+
+### FFmpeg hoặc font lỗi
+
+Kiểm tra `ffmpeg -version`, filter `ass`, PATH/`FFMPEG_PATH`. Font mặc định trên Windows là Arial Bold. Nếu không có font, đặt `AIR3VIEW_FONT` đến file TTF phù hợp và kiểm tra MP4, nhất là với tiếng Việt. Cần font đã cài cho libass; biến này chủ yếu dùng đo chữ khi xuống dòng.
+
+### Cổng đang được sử dụng
+
+Dừng instance cũ hoặc đặt `AIR3VIEW_PORT` trước khi khởi động. Không chạy hai server cùng ghi vào một `data/`. Endpoint kiểm tra OmniVoice trên giao diện hiện dùng cổng 8001; nên giữ cổng này dù cấu hình TTS có trường URL.
+
+## 10. Biến môi trường
+
+Đặt trong terminal trước khi chạy server; không cần sửa code:
+
+| Biến | Ý nghĩa |
+| --- | --- |
+| `AIR3VIEW_PORT` | Cổng backend, mặc định 8000 |
+| `AIR3VIEW_DATA` | Đường dẫn tuyệt đối tới thư mục dữ liệu; mặc định `data/` trong repo |
+| `FFMPEG_PATH` | Đường dẫn đầy đủ tới `ffmpeg.exe` nếu không dùng PATH |
+| `CODEX_PATH` | Đường dẫn executable Codex nếu không tìm thấy trong PATH |
+| `OPENAI_API_KEY` | API key trong môi trường server; không bắt buộc nếu dùng Codex |
+| `AIR3VIEW_FONT` | Font TTF dùng đo bố cục phụ đề |
+
+Ví dụ cho đường dẫn có dấu cách:
+
+```powershell
+$env:AIR3VIEW_DATA = 'D:\AIR3view Data'
+$env:FFMPEG_PATH = 'C:\Tools\ffmpeg\bin\ffmpeg.exe'
+$env:AIR3VIEW_PORT = '8000'
+.\Start-AIR3view.ps1
+```
+
+AIR3view là công cụ local, chưa có xác thực tài khoản hay thiết kế để public ra Internet. Ảnh và transcript được gửi tới provider khi phân tích; video và file dựng được lưu trên máy. Chỉ xử lý nội dung/giọng mẫu bạn có quyền sử dụng. Chưa có installer `.exe`, timeline kéo-thả kiểu NLE, hay bảo đảm forced alignment hoàn hảo.
+
+`PROJECT_PLAN.vi.md` là thiết kế lịch sử; `VALIDATION.vi.md` ghi kiểm chứng ở máy phát triển và tham chiếu một số file local không được upload. README này mô tả cách cài và luồng sử dụng hiện tại.

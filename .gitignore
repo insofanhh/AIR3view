@@ -1,0 +1,28 @@
+.venv/
+node_modules/
+frontend/dist/
+data/
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+*.log
+test-results/
+*.tsbuildinfo
+
+# Local credentials and environment variants
+.env.*
+!.env.example
+*.pem
+*.key
+# Local model/media/database artifacts
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.safetensors
+*.pt
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
