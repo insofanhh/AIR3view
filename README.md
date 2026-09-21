@@ -128,7 +128,7 @@ Hoặc, khi CUDA hoạt động và GPU đủ bộ nhớ:
 
 Lần đầu sẽ tải model; chờ đến khi dịch vụ sẵn sàng rồi mở [OmniVoice local](http://127.0.0.1:8001). Giữ terminal này chạy. `Ctrl+C` dừng dịch vụ và giải phóng model.
 
-`--no-asr` bỏ model nhận dạng riêng của OmniVoice để tiết kiệm bộ nhớ. Với chế độ clone, nhập đúng lời nói của audio tham chiếu. AIR3view vẫn dùng faster-whisper riêng để nhận dạng nguồn và canh phụ đề.
+`--no-asr` bỏ model nhận dạng riêng của OmniVoice để tiết kiệm bộ nhớ. Với chế độ clone, nhập đúng lời nói của audio tham chiếu. AIR3view vẫn dùng faster-whisper riêng để nhận dạng nguồn và canh phụ đề. Khi thay file giọng mẫu, ô lời mẫu được xóa để tránh dùng nhầm bản chép của file cũ. Hướng dẫn giọng là thẻ OmniVoice hỗ trợ (ví dụ `male, low pitch`); để trống sẽ giữ giọng của audio, không nhập mô tả tự do.
 
 Đây là bộ phiên bản tham chiếu, chưa phải lockfile toàn bộ phụ thuộc của OmniVoice. Khi cập nhật OmniVoice, kiểm tra lại hai endpoint `/_design_fn` và `/_clone_fn` trước khi chạy dự án lớn.
 
@@ -199,6 +199,11 @@ AI đọc các đoạn của toàn bộ nguồn trước khi lập bản biên t
 Đổi chế độ, số phần, thời lượng, ngôn ngữ, hook hoặc quy tắc sẽ yêu cầu phân tích lại trước khi xuất/tạo giọng cho bản chọn cảnh mới. Dự án cũ vẫn xem được; chọn chế độ ở tab Đầu ra trước khi chạy mới. Phân tích lại thay lời dẫn hiện tại, nên sao lưu nếu cần giữ bản cũ.
 
 ### Phụ đề và âm thanh
+
+- Tab **Giọng** dùng một giọng kể chung cho toàn bộ video và các phần. Chế độ **Tạo một giọng chung** tạo mẫu một lần rồi dùng mẫu đó cho mọi lời dẫn; mẫu được lưu trong dự án và giữ nguyên khi sửa lời hoặc tốc độ đọc. Có thể nghe mẫu trước khi xuất. Chế độ tham chiếu dùng chung audio bạn tải lên.
+- **AI kể xuyên suốt** là mặc định cho dự án mới: kể bối cảnh, các chặng diễn biến và kết quả có bằng chứng, giữ 10–20% thời lượng cho thoại gốc quan trọng (mặc định 15%, tính cả hook). Đây là tỷ lệ đoạn ưu tiên thoại gốc ở âm lượng đầy đủ, không phải số từ. Các cảnh lời AI giữ tiếng nguồn nhỏ dưới nền cả khi ngắt câu, đồng thời chỉ hiện phụ đề lời kể. Thanh **Tiếng gốc dưới nền lời AI** chỉnh từ 0–100% so với âm lượng gốc, mặc định 15%; chọn 0% để tắt. Bấm **Lưu âm lượng & dựng lại** để cập nhật MP4. Chỉ đổi âm lượng sẽ dùng lại audio; nếu đổi giọng mẫu, lời đọc hoặc cấu hình tổng hợp giọng, ứng dụng tự tạo lại các đoạn cần thiết trước khi xuất, không viết lại kịch bản. Dự án cũ chọn chế độ này trong tab **Giọng**, rồi bấm **Viết lại lời kể & tạo video** để phân tích và dựng lại. Giọng kể chung vẫn được giữ.
+- Lời kể được viết theo thời lượng cảnh và tốc độ giọng mẫu, chia thành đoạn tối đa 25 giây. OmniVoice tạo audio theo thời lượng đó; nếu lệch quá nhiều, ứng dụng yêu cầu sửa lời thay vì cắt câu hoặc chèn im lặng. Nguồn không có audio không thể giữ thoại gốc.
+- Với dự án cũ, bấm **Áp dụng giọng chung cho toàn bộ video** để thay các đoạn từng được tạo bằng giọng riêng. Sau đó dựng/xuất lại để đưa giọng mới vào MP4. Đổi giới tính hoặc ngôn ngữ dùng mẫu tương ứng; không cần phân tích AI lại chỉ để đổi giọng.
 
 - Highlight chỉ tô từ đang được đọc; khoảng nghỉ trả về màu thường. Câu thiếu mốc từ đủ tin cậy giữ chữ thường. MP4/ASS có màu; SRT chỉ giữ nội dung và thời gian.
 - Bấm **Canh highlight theo âm thanh** sau khi sửa phụ đề hoặc để cập nhật dự án cũ; dùng lại WAV đã có.
@@ -279,6 +284,12 @@ Phát triển giao diện: chạy backend và `npm.cmd --prefix frontend run dev
 ### Không thấy giao diện / chỉ thấy thông báo build
 
 Chạy `npm.cmd --prefix frontend ci`, `npm.cmd --prefix frontend run build`, rồi restart server. `frontend/dist` được tạo trên máy mới, không nằm trong Git.
+
+### Thiếu `cublas64_12.dll` / CUDA ASR không hoạt động
+
+Đây là lỗi thư viện GPU của faster-whisper khi nhận dạng hoặc canh phụ đề; môi trường OmniVoice riêng vẫn có thể hoạt động. AIR3view tự thử lại toàn bộ đoạn âm thanh bằng CPU int8 khi CUDA thiếu thư viện, driver không tương thích hoặc hết VRAM. Khi thành công, lựa chọn **Thiết bị ASR** của dự án được lưu thành **CPU**, tránh lặp lỗi ở từng lời dẫn. Lời kể, giọng mẫu và âm thanh đã tạo được giữ lại. Lỗi file, model hoặc thao tác hủy không bị che thành lỗi CUDA.
+
+Có thể chọn **Kết nối → Thiết bị ASR → CPU** thủ công rồi chạy **Tạo giọng OmniVoice** để tiếp tục từ audio đã lưu, sau đó **Xuất video**. Chỉ chọn lại NVIDIA CUDA khi đã cài đúng cuBLAS CUDA 12 / cuDNN 9 và GPU còn đủ bộ nhớ; xem [yêu cầu faster-whisper](https://github.com/SYSTRAN/faster-whisper#gpu).
 
 ### OmniVoice chưa kết nối / không tạo được giọng
 

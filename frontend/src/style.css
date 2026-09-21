@@ -19,3 +19,16 @@
 .output-options{display:grid;gap:10px;margin:15px 0}.output-option{display:flex;gap:10px;border:1px solid #394452;border-radius:8px;padding:12px;cursor:pointer;background:#171e27}.output-option.selected{border-color:#b9f46a;background:#b9f46a0a}.output-option input{flex-shrink:0;width:14px;margin-top:2px;accent-color:#b9f46a}.output-option strong{display:block;font-size:11px;color:#d2dfc4}.output-option small{display:block;font-size:10px;line-height:1.8;margin-top:6px;color:#93a1b2}.story-structure{padding-left:20px;font-size:11px}.story-structure li{padding:6px 0;line-height:1.7}.story-structure span{display:block;color:#95a3b5;font-size:10px}.output-summary{padding:13px 10px;background:#b9f46a0c;border:1px solid #b9f46a30;color:#c5e69f;border-radius:7px;font-size:11px;margin:16px 0}.story-notes{font-size:10px;line-height:1.8;color:#a2b0bf;margin-top:20px}.story-notes p{margin:7px 0 12px}.story-notes b,.story-notes strong{color:#c3d5b1}.narration-section{font-size:10px;color:#c6e79e;margin-bottom:10px}.selected-scenes h4{font-size:11px;margin:12px 0;color:#c3d5b1}.timeline-clip.highlight{background:#284449;border-color:#53838a}.inspector-tabs button{padding-left:7px;padding-right:7px}
 
 .inspector-tabs button{white-space:nowrap;font-size:10px;min-width:0;padding-left:5px;padding-right:5px}
+
+/* Shared numeric control: editable draft and comfortably sized step buttons. */
+.number-input{display:flex;align-items:center;width:100%;min-width:0;border:1px solid #394452;border-radius:7px;background:#222730;overflow:hidden}
+.number-input:focus-within{border-color:#b9f46a;box-shadow:0 0 0 2px #b9f46a18}
+.number-input>input{flex:1;min-width:0;width:0;border:0;border-radius:0;background:transparent;box-shadow:none;padding:10px 12px}
+.number-input>input:focus{outline:none;box-shadow:none}
+.number-input>button{display:grid;place-items:center;flex-shrink:0;width:30px;align-self:stretch;min-height:34px;border:0;border-left:1px solid #394452;border-radius:0;color:#bdc9d8;background:#ffffff04;padding:0}
+.number-input>button:hover:not(:disabled){color:#d4f89c;background:#b9f46a18}
+.number-input>button:focus-visible{outline:2px solid #b9f46a;outline-offset:-3px}
+.number-input>button:disabled{opacity:.3;cursor:default}
+.narration-head .number-input,.subtitle-card .number-input{width:96px;flex:1;max-width:120px}
+.narration-head .number-input>input,.subtitle-card .number-input>input{width:0;min-width:0;padding:5px;font-size:9px}
+.narration-head .number-input>button,.subtitle-card .number-input>button{width:23px;min-height:28px}

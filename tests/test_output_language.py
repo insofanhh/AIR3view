@@ -68,6 +68,7 @@ def test_legacy_freeze_projects_migrate_to_moving_muted_overlay(tmp_path, monkey
 
 def test_ai_cannot_automatically_switch_to_freeze(tmp_path, monkeypatch):
     p = sample(tmp_path, monkeypatch)
+    p['settings']['duck_volume'] = .27
     p['settings']['review_enabled'] = False
     p['metadata'] = {'duration': 20, 'has_audio': True}
     p['frames'] = [{'time': 0, 'file': 'frame.jpg'}]
@@ -75,7 +76,7 @@ def test_ai_cannot_automatically_switch_to_freeze(tmp_path, monkeypatch):
     monkeypatch.setattr(providers, 'ask_ai', lambda *args: answer)
     out = providers.analyze(p, lambda *a: None, lambda: None)
     assert out['settings']['narration_mode'] == 'overlay'
-    assert out['settings']['duck_volume'] == 0
+    assert out['settings']['duck_volume'] == .27
 
 
 def test_reanalysis_translates_preserved_title(tmp_path, monkeypatch):
@@ -127,5 +128,5 @@ def test_audio_cache_survives_alignment_failure(tmp_path, monkeypatch):
     assert saved['narrations'][0]['caption_version'] == 0
     monkeypatch.setattr(providers, 'transcribe', lambda *a, **kw: [{'id':'c0', 'start':0, 'end':2, 'text':n['text']}])
     result = providers.synthesize(saved, lambda *a: None, lambda: None)
-    assert result['narrations'][0]['caption_version'] == 3
+    assert result['narrations'][0]['caption_version'] == 4
     assert audio.read_bytes() == b'cached TTS'

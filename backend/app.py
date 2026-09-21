@@ -72,6 +72,8 @@ def work():
                     from .captions import refresh
                     project = refresh(project, report, check)
                 if kind in ('render', 'preview', 'all'):
+                    if kind in ('render', 'preview'):
+                        project = providers.prepare_render_audio(project, report, check)
                     if project['settings'].get('subtitle_highlight', True):
                         build(project, strict=True)
                         from .captions import refresh
@@ -143,8 +145,8 @@ def queue_job(pid, kind):
         from .story import output_budget
         output_budget(project['settings'])
     if project['settings'].get('output_mode') and (kind in ('voice', 'language') or kind.startswith('voice:')):
-        from .story import plan_fingerprint
-        if not project.get('story_plan') or project.get('plan_fingerprint') != plan_fingerprint(project):
+        from .story import plan_is_current
+        if not plan_is_current(project):
             raise ValueError('Cấu hình đầu ra đã thay đổi. Phân tích AI lại trước khi tạo giọng để đọc đúng kịch bản mới.')
     jid = store.new_job(pid, kind)
     QUEUE.put(jid)
@@ -178,9 +180,23 @@ def set_key(body: KeyInput):
     return {'configured': bool(providers.key()), 'storage': 'session'}
 
 
+def present_project(project):
+    # Metadata is saved before proxy generation. Do not advertise a playable
+    # source until the temporary file has been atomically renamed.
+    preview = None
+    path = store.project_dir(project['id']) / 'proxy.mp4'
+    try:
+        stat = path.stat()
+        if stat.st_size:
+            preview = {'file': path.name, 'version': f'{stat.st_mtime_ns}-{stat.st_size}'}
+    except FileNotFoundError:
+        pass
+    return {**project, 'preview': preview, 'shared_voice': providers.shared_voice(project)}
+
+
 @app.get('/api/projects')
 def list_projects():
-    return store.list_projects()
+    return [present_project(p) for p in store.list_projects()]
 
 
 @app.post('/api/projects/url')
@@ -216,7 +232,7 @@ async def upload_video(file: UploadFile = File(...)):
 
 @app.get('/api/projects/{pid}')
 def get_project(pid: str):
-    return store.read(pid)
+    return present_project(store.read(pid))
 
 
 @app.put('/api/projects/{pid}')
@@ -255,11 +271,16 @@ def edit_project(pid: str, body: ProjectEdit):
             old = old_narrations.get(n['id'])
             if old and clear_stale_words(n['cues'], old.get('cues', [])):
                 n['caption_version'] = 0
+        from .story import plan_is_current, plan_fingerprint
+        if plan_is_current(project):
+            # Migrate a verified old signature before applying edits. Never
+            # bless already stale plans or recompute from changed settings.
+            project['plan_fingerprint'] = plan_fingerprint(project)
         project.update(incoming)
         project['exports'] = []
         project['preview_exports'] = []
         build(project)  # validate ranges before persisting
-        return store.save(project)
+        return present_project(store.save(project))
 
 
 @app.get('/api/projects/{pid}/timeline')
@@ -301,7 +322,7 @@ async def upload_subtitles(pid: str, file: UploadFile = File(...)):
         editable(pid)
         project = store.read(pid)
         project.update(transcript=cues, source_transcript=[dict(c) for c in cues], transcript_language='', transcript_origin='imported_srt', exports=[], preview_exports=[])
-        return store.save(project)
+        return present_project(store.save(project))
 
 
 @app.post('/api/projects/{pid}/reference')
@@ -318,9 +339,10 @@ async def upload_reference(pid: str, file: UploadFile = File(...)):
         relative = 'reference-' + uuid.uuid4().hex + ext
         store.asset(pid, relative).write_bytes(content)
         project['settings']['voice_reference'] = relative
+        project['settings']['voice_reference_text'] = ''
         project['exports'] = []
         project['preview_exports'] = []
-        return store.save(project)
+        return present_project(store.save(project))
 
 
 @app.get('/api/projects/{pid}/document')
@@ -333,8 +355,8 @@ def project_document(pid: str):
 def get_media(pid: str, relative: str):
     path = store.asset(pid, relative)
     if path.suffix.lower() not in ('.mp4', '.mov', '.mkv', '.webm', '.avi', '.wav', '.mp3', '.m4a', '.ogg', '.flac', '.jpg', '.png', '.srt', '.ass') or not path.is_file():
-        raise HTTPException(404, 'Không tìm thấy file media.')
-    return FileResponse(path)
+        raise HTTPException(404, 'Không tìm thấy file media.', headers={'Cache-Control': 'no-store'})
+    return FileResponse(path, headers={'Cache-Control': 'no-cache'})
 
 
 dist = store.ROOT / 'frontend' / 'dist'

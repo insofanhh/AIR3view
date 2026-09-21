@@ -198,7 +198,16 @@ def render_part(project, timeline, part, folder, check, width=1080):
         filters.append('[square]null[clean_square]')
     filters.append(f'[background][clean_square]overlay=0:{geometry["top"]}:shortest=1,ass=filename={name}.ass,scale={width}:{round(width*16/9)},format=yuv420p,setsar=1[outv]')
     duck = '+'.join(f'between(t,{max(0,v["start"]-part["start"]):.6f},{min(part["duration"],v["end"]-part["start"]):.6f})' for v in voices) or '0'
-    filters.append(f"[original]volume='{settings['original_volume']}*if(gt({duck},0),{settings['duck_volume']},1)':eval=frame[ducked]")
+    gate = '1'
+    if 'original_audio' in timeline:
+        gate = '+'.join(f'between(t,{max(0,x["start"]-part["start"]):.6f},{min(part["duration"],x["end"]-part["start"]):.6f})'
+                        for x in timeline['original_audio'] if x['end']>part['start'] and x['start']<part['end']) or '0'
+    # Narrated scenes keep a quiet background through pauses too. Only the
+    # selected original-dialogue intervals return to full source volume.
+    level = f"if(gt({duck},0),{settings['duck_volume']},1)"
+    if 'original_audio' in timeline:
+        level = f"if(gt({gate},0),{level},{settings['duck_volume']})"
+    filters.append(f"[original]volume='{settings['original_volume']}*({level})':eval=frame[ducked]")
     mix = ['[ducked]']
     for i, v in enumerate(voices):
         a = max(0, part['start'] - v['start'])
@@ -224,7 +233,7 @@ def render(project, report, check, preview=False):
     timeline = build(project, strict=True)
     if not timeline['clips']:
         raise ValueError('Chưa có video để xuất.')
-    fingerprint = digest({'source': project['source'], 'settings': project['settings'], 'narrations': project['narrations'], 'transcript': project['transcript'], 'preview': preview, 'renderer': 8, 'story_plan': project.get('story_plan')})[:16]
+    fingerprint = digest({'source': project['source'], 'settings': project['settings'], 'narrations': project['narrations'], 'transcript': project['transcript'], 'preview': preview, 'renderer': 10, 'story_plan': project.get('story_plan')})[:16]
     folder = store.project_dir(project['id']) / 'renders' / fingerprint
     folder.mkdir(parents=True, exist_ok=True)
     parts = timeline['parts'][:1] if preview else timeline['parts']

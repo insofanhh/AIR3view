@@ -63,7 +63,7 @@ def save(project):
 def create(name, source):
     pid = uuid.uuid4().hex
     project_dir(pid)
-    return save({'id': pid, 'name': name, 'source': source, 'created': time.time(), 'playback_version': 2, 'settings': Settings(output_mode='single').model_dump(), 'metadata': {}, 'scenes': [], 'frames': [], 'transcript': [], 'narrations': [], 'hooks': [], 'summary': '', 'exports': [], 'warnings': [], 'revision': 0})
+    return save({'id': pid, 'name': name, 'source': source, 'created': time.time(), 'playback_version': 2, 'settings': Settings(output_mode='single', narration_style='storytelling', opening_delay=0).model_dump(), 'metadata': {}, 'scenes': [], 'frames': [], 'transcript': [], 'narrations': [], 'hooks': [], 'summary': '', 'exports': [], 'warnings': [], 'revision': 0})
 
 
 def list_projects():

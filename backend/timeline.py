@@ -138,8 +138,8 @@ def slice_clips(timeline, start, end):
 def build(project, strict=False):
     if not project['settings'].get('output_mode'):
         return build_legacy(project, strict)
-    from .story import plan_fingerprint
-    if not project.get('story_plan') or project.get('plan_fingerprint') != plan_fingerprint(project):
+    from .story import plan_is_current
+    if not plan_is_current(project):
         message = 'Cấu hình đầu ra chưa có bản chọn cảnh phù hợp. Bấm Phân tích AI hoặc Chạy toàn bộ để lập lại kịch bản.'
         if strict:
             raise ValueError(message)
@@ -153,8 +153,18 @@ def build(project, strict=False):
 
 def build_story(project, strict=False):
     import copy
+    from .story import storytelling, validate_narration_budget
     settings = project['settings']
     plan = project['story_plan']
+    narrated = storytelling(settings)
+    if strict and narrated:
+        # The actual WAV lengths are checked below. A newly created/shared
+        # speaker must not retroactively change the script's word budget.
+        validate_narration_budget(plan, project, check_text=False)
+        expected = {x['id'] for x in plan['selections'] if x['narration'].strip()}
+        present = {n.get('segment_id') for n in project['narrations'] if n['enabled'] and n['text'].strip()}
+        if not expected <= present:
+            raise ValueError('Thiếu lời kể cho cảnh AI. Tạo lại kịch bản để giữ tỷ lệ lời kể và thoại gốc.')
     clips, parts, mapped_cues, mapped_narrations, warnings = [], [], [], [], []
     cursor = 0.0
     def append(kind, a, b, part, identifier='', section=''):
@@ -170,7 +180,15 @@ def build_story(project, strict=False):
     for index in sorted(set(c['part'] for c in clips)):
         group=[c for c in clips if c['part']==index]
         parts.append(dict(index=index,start=group[0]['start'],end=group[-1]['end'],duration=frame(group[-1]['end']-group[0]['start'])))
+    original_audio = []
+    selections = {x['id']: x for x in plan['selections']}
     for clip in clips:
+        if narrated:
+            keep = clip['kind']=='hook' or not selections[clip['segment_id']]['narration'].strip()
+            if not keep:
+                continue
+            if project['metadata'].get('has_audio'):
+                original_audio.append({'start': clip['start'], 'end': clip['end']})
         for cue in project['transcript']:
             a,b=max(cue['start'],clip['source_start']),min(cue['end'],clip['source_end'])
             if b>a:
@@ -192,17 +210,23 @@ def build_story(project, strict=False):
             message=f"Lời dẫn {n['id']} dài hơn cảnh đã chọn. Rút ngắn lời hoặc phân tích lại trước khi xuất."
             if strict: raise ValueError(message)
             warnings.append(message)
-        if n.get('section')=='opening' and n['start']-clip['source_start']<settings.get('opening_delay',3)-.001:
+        if not narrated and n.get('section')=='opening' and n['start']-clip['source_start']<settings.get('opening_delay',3)-.001:
             message='Lời mở đầu cần phát sau đoạn hình gốc, không ngay sau hook.'
             if strict: raise ValueError(message)
             warnings.append(message)
         mapped_narrations.append({**n,'start':start})
     virtual=copy.deepcopy(project)
     virtual.update(metadata={**project['metadata'],'duration':cursor},transcript=mapped_cues,narrations=mapped_narrations)
-    virtual['settings'].update(hook_enabled=False,narration_mode='overlay',duck_volume=0)
+    virtual['settings'].update(hook_enabled=False,narration_mode='overlay')
     result=build_legacy(virtual,strict)
     # Clip and part boundaries belong to the editorial plan, not source splitting.
     result.update(clips=clips,parts=parts,duration=cursor,planned=True)
+    if narrated:
+        original_ratio = sum(x['end']-x['start'] for x in original_audio)/cursor
+        ai_ratio = sum(v['end']-v['start'] for v in result['voices'])/cursor
+        result.update(original_audio=original_audio, narration_mix={'original_ratio': original_ratio, 'ai_ratio': ai_ratio})
+        if strict and ai_ratio < .78:
+            raise ValueError(f'Lời AI mới phủ {ai_ratio:.0%} video. Cần tạo đủ lời kể theo thời lượng cảnh trước khi xuất.')
     result['warnings']=list(dict.fromkeys(warnings+[w for w in result['warnings'] if not w.startswith('Ranh giới phần')]))
     for part in parts[:-1]:
         if any(v['start']<part['end']<v['end'] for v in result['voices']):

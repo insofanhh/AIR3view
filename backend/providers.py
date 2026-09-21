@@ -142,6 +142,11 @@ summary: tóm tắt tích lũy chỉ đến hết đoạn này.
 Tóm tắt trước: {summary}
 Ảnh đính kèm theo thứ tự tại các mốc: {[f['time'] for f in selected]}
 TRANSCRIPT DỮ LIỆU: {json.dumps(transcript, ensure_ascii=False)}'''
+        if settings.get('narration_style') == 'storytelling':
+            a, b = prompt.index('Nếu đoạn dài'), prompt.index('scenes:')
+            prompt = prompt[:a] + '''Đọc đầy đủ diễn biến, quan hệ và kết quả trong đoạn. Ghi các câu thoại quyết định cùng mốc chính xác trong evidence để biên tập chọn giữ 10–20% thoại gốc.
+Đề xuất lời kể theo từng chặng, giải thích bối cảnh và chuỗi sự việc có bằng chứng; không chỉ chen vài câu nhận xét. Không suy đoán động cơ. Hình tiếp tục chạy, requires_insert=false. Kịch bản cuối sẽ dành phần lớn thời lượng cho AI kể.
+''' + prompt[b:]
         result = ask_ai(prompt, images, settings, folder, check)
         if settings['review_enabled']:
             report(23 + 65 * batch / count, f'Kiểm tra kịch bản {batch+1}/{count}…')
@@ -224,15 +229,116 @@ def localize(project, report, check):
 
 def voice_hash(narration, settings):
     synthesis = {k: v for k, v in settings.items() if k.startswith('voice_') or k in ('language', 'omnivoice_url')}
-    # Keep the initial cache format, but mixing gain never changes synthesized speech.
+    # Old design clips used a random speaker per request; regenerate them once.
+    if settings['voice_mode'] == 'design':
+        synthesis['voice_strategy'] = 'shared-reference-v1'
+    # Mixing gain never changes synthesized speech.
     synthesis['voice_volume'] = 1.0
-    return digest({'text': narration['text'], 'settings': synthesis})
+    payload = {'text': narration['text'], 'settings': synthesis}
+    if narration.get('target_duration', 0) > 0:
+        payload['target_duration'] = narration['target_duration']
+        payload['timing_version'] = 1
+    return digest(payload)
+
+
+def voice_profile_key(settings):
+    # Delivery controls and narration text must not select a different speaker.
+    return digest({k: settings[k] for k in ('language', 'voice_gender', 'omnivoice_url')})
+
+
+def shared_voice(project):
+    if project['settings']['voice_mode'] != 'design':
+        return None
+    return project.get('voice_profiles', {}).get(voice_profile_key(project['settings']))
+
+
+def generate_voice_audio(client, params, endpoint, destination, report, check, progress, label, target_duration=0):
+    from .media import run, FFMPEG
+    check()
+    task = client.submit(**params, api_name=endpoint)
+    started = time.monotonic()
+    try:
+        last_status = 0
+        while not task.done():
+            check()
+            elapsed = time.monotonic() - started
+            if elapsed - last_status > 10:
+                status = task.status()
+                code = getattr(getattr(status, 'code', ''), 'name', '')
+                report(progress, f'{label} · {round(elapsed)}s · {code}')
+                last_status = elapsed
+            if elapsed > 1200:
+                raise TimeoutError('OmniVoice quá 20 phút. Thử giảm độ dài câu hoặc số inference steps.')
+            time.sleep(.5)
+        check()
+        output = task.result()
+    except BaseException:
+        task.cancel()
+        raise
+    audio = output[0] if isinstance(output, (tuple, list)) else output
+    if isinstance(audio, dict):
+        audio = audio.get('path')
+    if not audio or not Path(audio).is_file():
+        raise RuntimeError('OmniVoice không trả file audio. ' + str(output)[-500:])
+    destination.parent.mkdir(exist_ok=True)
+    temporary = destination.with_suffix('.tmp.wav')
+    args = [FFMPEG, '-y', '-i', audio]
+    if target_duration:
+        factor = probe(audio)['duration'] / target_duration
+        if not .75 <= factor <= 1.25:
+            raise ValueError('Thời lượng giọng lệch quá nhiều so với cảnh. Điều chỉnh độ dài lời kể rồi tạo lại giọng; không cắt mất lời hoặc chèn im lặng.')
+        args += ['-af', f'atempo={factor:.8f}']
+    run(args + ['-ar', '48000', '-ac', '1', temporary], check_cancel=check)
+    if probe(temporary)['duration'] <= 0:
+        raise RuntimeError('OmniVoice trả audio rỗng.')
+    check()
+    temporary.replace(destination)
+
+
+def ensure_shared_voice(project, client, report, check):
+    profile = shared_voice(project)
+    if profile:
+        path = store.asset(project['id'], profile['audio'])
+        if not path.is_file() or probe(path)['duration'] <= 0:
+            raise ValueError('Không tìm thấy mẫu giọng chung đã lưu. Khôi phục file giọng chung hoặc chọn giọng tham chiếu để tránh đổi người kể giữa video.')
+        return profile
+    settings = project['settings']
+    text = {
+        'English': 'Every story has a beginning, a turning point, and an ending. Let us follow what happened, step by step.',
+        'Vietnamese': 'Mỗi câu chuyện đều có mở đầu, diễn biến và kết thúc. Hãy cùng theo dõi những gì đã xảy ra, từng bước một.',
+        'Chinese': '每个故事都有开头、转折和结尾。让我们一步一步了解事情的经过，认真听清每一个细节。',
+    }.get(settings['language'])
+    if not text:
+        text = next(n['text'] for n in project['narrations'] if n['enabled'] and n['text'].strip())[:500]
+    params = dict(text=text, lang=settings['language'], ns=settings['voice_steps'],
+                  gs=2, dn=True, sp=1, du=None, pp=True, po=True)
+    api = client.view_api(return_format='dict', print_info=False)
+    for param in api['named_endpoints']['/_design_fn']['parameters']:
+        name = param['parameter_name']
+        if name not in params:
+            params[name] = settings['voice_gender'] if 'gender' in name.lower() or name in ('gen', 'param_9') else param.get('parameter_default', 'Auto')
+    key = voice_profile_key(settings)
+    relative = f'voice-profiles/{key}.wav'
+    report(3, 'Tạo mẫu giọng chung cho toàn bộ video…')
+    generate_voice_audio(client, params, '/_design_fn', store.project_dir(project['id']) / relative,
+                         report, check, 3, 'Tạo mẫu giọng chung')
+    profile = {'audio': relative, 'text': text}
+    project.setdefault('voice_profiles', {})[key] = profile
+    # Save before any narration/alignment so retries keep exactly this speaker.
+    store.save(project)
+    return profile
 
 
 def synthesize(project, report, check, only_id=None):
     from gradio_client import Client, handle_file
     folder = store.project_dir(project['id'])
     settings = project['settings']
+    if settings['voice_mode'] == 'clone':
+        if not settings.get('voice_reference_text', '').strip():
+            raise ValueError('Điền đúng lời được đọc trong audio mẫu trước khi tạo giọng tham chiếu.')
+        # This old app default is prose, not a supported OmniVoice voice tag.
+        if settings.get('voice_instruct') == 'Giọng kể tự nhiên, rõ ràng, cuốn hút.':
+            settings['voice_instruct'] = ''
     pending = [n for n in project['narrations'] if n['enabled'] and n['text'].strip() and (only_id is None or n['id'] == only_id)]
     if not pending:
         raise ValueError('Chưa có lời dẫn. Phân tích AI hoặc thêm một đoạn lời dẫn trước.')
@@ -242,60 +348,35 @@ def synthesize(project, report, check, only_id=None):
         fingerprint = voice_hash(narration, settings)
         destination = folder / 'voices' / (fingerprint + '.wav')
         cached_audio = destination.is_file() and probe(destination)['duration'] > 0
-        if cached_audio and narration.get('audio_hash') == fingerprint and narration.get('caption_version') == 3:
+        if cached_audio and narration.get('audio_hash') == fingerprint and narration.get('caption_version') == 4:
             continue
         if not cached_audio:
             report(5 + 80 * i / len(pending), f'OmniVoice tạo giọng {i+1}/{len(pending)}…')
             if client is None:
                 client = Client(settings['omnivoice_url'], verbose=False, download_files=str(folder / 'voice-downloads'))
-            common = dict(text=narration['text'], lang=settings['language'], ns=settings['voice_steps'], gs=2, dn=True, sp=settings['voice_speed'], du=None, pp=True, po=True)
+            target = narration.get('target_duration', 0)
+            common = dict(text=narration['text'], lang=settings['language'], ns=settings['voice_steps'], gs=2, dn=True, sp=settings['voice_speed'], du=target or None, pp=True, po=not bool(target))
             if settings['voice_mode'] == 'clone':
                 if not settings['voice_reference']:
                     raise ValueError('Chọn audio giọng mẫu trước khi dùng chế độ giọng tham chiếu.')
-                common.update(ref_aud=handle_file(str(store.asset(project['id'], settings['voice_reference']))), ref_text=settings['voice_reference_text'], instruct=settings['voice_instruct'])
-                endpoint = '/_clone_fn'
+                reference = settings['voice_reference']
+                reference_text = settings['voice_reference_text']
             else:
-                # Match names against the running schema (Gradio versions may rename UI parameters).
-                api = client.view_api(return_format='dict', print_info=False)
-                params = api['named_endpoints']['/_design_fn']['parameters']
-                for param in params:
-                    name = param['parameter_name']
-                    if name not in common:
-                        default = param.get('parameter_default', 'Auto')
-                        common[name] = settings['voice_gender'] if 'gender' in name.lower() or name in ('gen', 'param_9') else default
-                endpoint = '/_design_fn'
-            task = client.submit(**common, api_name=endpoint)
-            started = time.monotonic()
-            try:
-                last_status = 0
-                while not task.done():
-                    check()
-                    elapsed = time.monotonic() - started
-                    if elapsed - last_status > 10:
-                        status = task.status()
-                        label = getattr(getattr(status, 'code', ''), 'name', '')
-                        report(5 + 80 * i / len(pending), f'OmniVoice {i+1}/{len(pending)} · {round(elapsed)}s · {label}')
-                        last_status = elapsed
-                    if elapsed > 1200:
-                        raise TimeoutError('OmniVoice quá 20 phút. Thử giảm độ dài câu hoặc số inference steps.')
-                    time.sleep(.5)
-            except BaseException:
-                task.cancel()
-                raise
-            output = task.result()
-            audio = output[0] if isinstance(output, (tuple, list)) else output
-            if isinstance(audio, dict):
-                audio = audio.get('path')
-            if not audio or not Path(audio).is_file():
-                raise RuntimeError('OmniVoice không trả file audio. ' + str(output)[-500:])
-            (folder / 'voices').mkdir(exist_ok=True)
-            destination = folder / 'voices' / (fingerprint + '.wav')
-            from .media import run, FFMPEG
-            run([FFMPEG, '-y', '-i', audio, '-ar', '48000', '-ac', '1', destination], check_cancel=check)
+                profile = ensure_shared_voice(project, client, report, check)
+                reference, reference_text = profile['audio'], profile['text']
+            common.update(ref_aud=handle_file(str(store.asset(project['id'], reference))),
+                          ref_text=reference_text,
+                          # Auto-designed voices inherit the reference speaker.
+                          # OmniVoice accepts a fixed tag vocabulary here, not
+                          # the legacy free-form Vietnamese design description.
+                          instruct=settings['voice_instruct'] if settings['voice_mode'] == 'clone' else '')
+            generate_voice_audio(client, common, '/_clone_fn', destination, report, check,
+                                 5 + 80 * i / len(pending), f'OmniVoice {i+1}/{len(pending)}', target_duration=target)
         duration = probe(destination)['duration']
         # Persist synthesized audio before alignment so cancellation/ASR failures
         # can resume without repeating the expensive OmniVoice generation.
         narration.update(audio=f'voices/{destination.name}', audio_hash=fingerprint, duration=duration, cues=[], caption_version=0)
+        project.update(exports=[], preview_exports=[])
         store.save(project)
         report(12 + 80 * i / len(pending), f'Canh phụ đề giọng {i+1}/{len(pending)}…')
         cues = transcribe(destination, settings, check, expected_text=narration['text'])
@@ -305,8 +386,26 @@ def synthesize(project, report, check, only_id=None):
             project['warnings'].append('Không nhận dạng được mốc từ cho ' + narration['id'] + '; phụ đề hiển thị theo cả câu, cần kiểm tra.')
         for cue in cues:
             cue['speaker'] = 'ai'
-        narration.update(audio=f'voices/{destination.name}', audio_hash=fingerprint, duration=duration, cues=cues, caption_version=3)
+        narration.update(audio=f'voices/{destination.name}', audio_hash=fingerprint, duration=duration, cues=cues, caption_version=4)
         store.save(project)
     project['exports'] = []
+    project['preview_exports'] = []
     report(98, 'Giọng đọc đã sẵn sàng')
     return store.save(project)
+
+
+def prepare_render_audio(project, report, check):
+    """An export after changing a speaker must synthesize that speaker first."""
+    if project['settings'].get('output_mode'):
+        from .story import plan_is_current
+        if not plan_is_current(project):
+            raise ValueError('Cấu hình đầu ra đã thay đổi. Phân tích AI lại trước khi xuất để dùng đúng kịch bản mới.')
+    for n in project['narrations']:
+        if not n['enabled'] or not n['text'].strip():
+            continue
+        if (not n.get('audio') or n.get('duration', 0) <= 0
+                or n.get('audio_hash') != voice_hash(n, project['settings'])
+                or not store.asset(project['id'], n['audio']).is_file()):
+            report(2, 'Giọng đã thay đổi hoặc chưa được tạo; tạo giọng trước khi dựng video…')
+            return synthesize(project, report, check)
+    return project

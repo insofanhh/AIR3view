@@ -45,6 +45,7 @@ class Narration(Model):
     audio: str = ''
     audio_hash: str = ''
     duration: float = 0
+    target_duration: float = Field(default=0, ge=0, le=1800)
     caption_version: int = 0
     cues: list[Cue] = Field(default_factory=list)
 
@@ -71,7 +72,7 @@ class Settings(Model):
     subtitle_highlight: bool = True
     subtitle_highlight_color: str = Field(default='#38bdf8', pattern=r'^#[0-9a-fA-F]{6}$')
     original_volume: float = Field(default=1, ge=0, le=2)
-    duck_volume: float = Field(default=0, ge=0, le=1)
+    duck_volume: float = Field(default=.15, ge=0, le=1)
     voice_volume: float = Field(default=1, ge=0, le=2)
     narration_mode: Literal['overlay', 'insert'] = 'overlay'
     hook_enabled: bool = False
@@ -79,9 +80,9 @@ class Settings(Model):
     hook_end: float = Field(default=5, gt=0)
     # None preserves historical timelines until the user selects an output mode.
     output_mode: Literal['single', 'parts'] | None = None
-    summary_seconds: float = Field(default=180, ge=30, le=1800)
+    summary_seconds: float = Field(default=180, ge=0, le=1800)
     part_count: int = Field(default=3, ge=1, le=100)
-    opening_delay: float = Field(default=3, ge=1, le=15)
+    opening_delay: float = Field(default=3, ge=0, le=15)
     part_seconds: float = Field(default=60, ge=10, le=1800)
     split_mode: Literal['exact', 'natural'] = 'natural'
     part_durations: list[float] = Field(default_factory=list, max_length=200)
@@ -89,10 +90,12 @@ class Settings(Model):
     voice_mode: Literal['design', 'clone'] = 'design'
     voice_reference: str = ''
     voice_reference_text: str = ''
-    voice_instruct: str = 'Giọng kể tự nhiên, rõ ràng, cuốn hút.'
+    voice_instruct: str = ''
     voice_speed: float = Field(default=1, ge=0.5, le=1.5)
     voice_gender: str = 'Auto'
     voice_steps: int = Field(default=32, ge=4, le=64)
+    narration_style: Literal['highlights', 'storytelling'] = 'highlights'
+    original_dialogue_ratio: float = Field(default=.15, ge=.1, le=.2)
     review_enabled: bool = True
     draft_rule: str = 'Kể diễn biến chính xác theo hình và lời thoại. Câu ngắn, cuốn hút, không bịa tình tiết. Xen lời dẫn ở khoảng nghỉ; giữ các câu thoại quan trọng. Mỗi câu gắn mốc video và bằng chứng.'
     review_rule: str = 'Sửa lỗi tên, tình tiết và logic; bỏ câu thừa và bình luận cá nhân. Kiểm tra mốc hình khớp từng ý. Giữ đúng cấu trúc JSON.'

@@ -56,6 +56,34 @@ def test_exact_requested_part_count_and_no_extra_tail(monkeypatch):
     assert len(t['parts'])==2 and t['parts'][-1]['end']==t['duration']
 
 
+def test_zero_duration_uses_source_in_prompt_validation_and_timeline(monkeypatch):
+    p=project()
+    p['settings']=Settings(output_mode='single',summary_seconds=0,language='English').model_dump()
+    raw=answer()
+    raw['selections'][1].update(start=10,end=40)
+    raw['selections'][-1].update(start=43,end=60)
+    prompts=[]
+    def fake(prompt,*args,**kwargs):
+        prompts.append(prompt)
+        return copy.deepcopy(raw)
+    monkeypatch.setattr(providers,'ask_ai',fake)
+    p=plan_story(p,lambda *a:None,lambda:None)
+    assert 'each aiming for 60 seconds' in prompts[0]
+    assert p['settings']['summary_seconds']==0
+    assert build(p)['duration']==60
+    raw['selections'][-1]['start']=40
+    with pytest.raises(ValueError,match='mục tiêu'):
+        validate_plan(raw,p)  # The hook also counts toward the source-length budget.
+
+
+def test_automatic_duration_does_not_change_explicit_or_part_budgets():
+    from backend.story import output_budget
+    assert output_budget(Settings(output_mode='single',summary_seconds=0).model_dump(),152.685)==(1,152.685)
+    assert output_budget(Settings(output_mode='single',summary_seconds=200).model_dump(),152.685)==(1,200)
+    assert output_budget(Settings(output_mode='parts',summary_seconds=0,part_count=2,part_seconds=45).model_dump(),152.685)==(2,45)
+    assert output_budget(Settings(output_mode='single',summary_seconds=0).model_dump(),3600)==(1,3600)
+
+
 @pytest.mark.parametrize('fault',['missing_end','overlap','long_voice','short_opening','budget','missing_part','outside'])
 def test_rejects_incomplete_or_impossible_editorial_plan(fault):
     p=project();a=answer()
@@ -73,6 +101,55 @@ def test_setting_change_blocks_old_plan_but_keeps_source_preview(monkeypatch):
     p=planned(monkeypatch);p['settings']['summary_seconds']=90
     assert build(p)['planned'] is False
     with pytest.raises(ValueError,match='Cấu hình đầu ra'):build(p,True)
+
+
+@pytest.mark.parametrize('changes,current',[
+    ({},True),
+    ({'part_count':7,'part_seconds':90},True),
+    ({'duck_volume':.28,'title_size':48,'asr_device':'cuda'},True),
+    ({'summary_seconds':90},False),
+    ({'voice_speed':1.35},False),
+    ({'language':'Vietnamese'},False),
+])
+def test_save_legacy_plan_and_queue_voice_checks_effective_settings(tmp_path,monkeypatch,changes,current):
+    from fastapi.testclient import TestClient
+    from backend.app import app, QUEUE
+    from backend.story import legacy_plan_fingerprint
+    monkeypatch.setattr(store,'DATA',tmp_path)
+    monkeypatch.setattr(store,'DB',tmp_path/'store.sqlite3')
+    monkeypatch.setattr(QUEUE,'put',lambda job:None)
+    store.init()
+    p=project()
+    p['settings']['summary_seconds']=40  # Legacy JSON integer, coerced to float by PUT.
+    p=planned(monkeypatch,p)
+    p['plan_fingerprint']=legacy_plan_fingerprint(p)
+    p=store.save(p)
+    body={k:copy.deepcopy(p[k]) for k in ('revision','name','settings','narrations','transcript') if k in p}
+    body['name']='Roundtrip plan'
+    body['settings'].update(changes)
+    client=TestClient(app)
+    headers={'X-AIR3view':'studio'}
+    url='/api/projects/'+p['id']
+    assert client.put(url,json=body,headers=headers).status_code==200
+    assert client.get(url+'/timeline').json()['planned'] is current
+    response=client.post(url+'/jobs',json={'kind':'voice'},headers=headers)
+    assert response.status_code==(200 if current else 422)
+    if not current:
+        assert 'Cấu hình đầu ra' in response.json()['detail']
+
+
+def test_fingerprint_ignores_numeric_encoding_and_inactive_story_delay(monkeypatch):
+    from backend.story import plan_is_current
+    p=planned(monkeypatch)
+    p['settings']['summary_seconds']=int(p['settings']['summary_seconds'])
+    p['metadata']['duration']=float(p['metadata']['duration'])
+    assert plan_is_current(p)
+    p['settings']['narration_style']='storytelling'
+    p['plan_fingerprint']=plan_fingerprint(p)
+    p['settings']['opening_delay']=12
+    assert plan_is_current(p)
+    p['settings']['original_dialogue_ratio']=.2
+    assert not plan_is_current(p)
 
 
 def test_actual_voice_cannot_overrun_selected_scene(monkeypatch):
@@ -93,7 +170,7 @@ def test_plan_is_written_after_entire_video_analysis(tmp_path,monkeypatch):
     p=store.create('Whole story',{'kind':'upload','file':'source.mp4'})
     p.update(metadata={'duration':120,'has_audio':True},frames=[{'time':0,'file':'a.jpg'},{'time':70,'file':'b.jpg'}],
              transcript=[{'id':'end','start':115,'end':118,'text':'The final outcome.'}])
-    p['settings'].update(review_enabled=False,summary_seconds=40)
+    p['settings'].update(review_enabled=False,summary_seconds=40,narration_style='highlights')
     calls=[]
     def fake(prompt,images,settings,folder,check,response_model=None):
         calls.append(prompt)

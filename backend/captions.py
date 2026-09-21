@@ -35,18 +35,16 @@ def refresh(project, report, check):
     voiced = [n for n in project['narrations'] if n.get('audio') and n.get('audio_hash') == voice_hash(n, settings)]
     for i, n in enumerate(voiced):
         check()
-        if n.get('caption_version') == 3:
+        if n.get('caption_version') == 4:
             continue
         report(5 + 30*i/max(1,len(voiced)), f"Canh từng từ giọng AI {i+1}/{len(voiced)}…")
         audio = store.asset(project['id'], n['audio'])
-        if n.get('cues'):
-            recognized = transcribe(audio, settings, check, expected_text=n['text'])
-            n['cues'] = align_existing(n['cues'], [w for c in recognized for w in c.get('words',[])])
-        else:
-            n['cues'] = transcribe(audio, settings, check, expected_text=n['text'])
+        # Rebuild readable phrase boundaries too: older alignment may have
+        # fallen back to one paragraph spanning the entire narration.
+        n['cues'] = transcribe(audio, settings, check, expected_text=n['text'])
         for c in n['cues']:
             c['speaker'] = 'ai'
-        n['caption_version'] = 3
+        n['caption_version'] = 4
         project.update(exports=[], preview_exports=[])
         store.save(project)
     if project.get('transcript') and project['metadata'].get('has_audio'):

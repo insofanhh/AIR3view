@@ -148,13 +148,48 @@ _asr_cache = {}
 
 
 def transcribe(path, settings, check=lambda: None, expected_text=None):
+    """Recover from unavailable CUDA at model load or lazy audio decoding.
+
+    Keep the same model and restart the whole audio on CPU so a partially
+    yielded GPU transcript can never be duplicated or mistaken for completion.
+    """
+    try:
+        return _transcribe(path, settings, check, expected_text)
+    except (RuntimeError, OSError) as exc:
+        message = str(exc).lower()
+        cuda = any(name in message for name in ('cuda', 'cublas', 'cudnn', 'cudart'))
+        unavailable = any(reason in message for reason in (
+            'not found', 'cannot be loaded', 'could not load', 'failed to load',
+            'driver version is insufficient', 'no cuda-capable device',
+            'out of memory', 'no kernel image'))
+        if settings['asr_device'] != 'cuda' or not (cuda and unavailable):
+            raise
+    # Leave the exception handler before allocating CPU memory, releasing its
+    # traceback and the failed GPU inference references first.
+    import gc
+    import logging
+    _asr_cache.clear()
+    gc.collect()
+    check()
+    logging.getLogger(__name__).warning('CUDA ASR không khả dụng; nhận dạng và canh phụ đề lại bằng CPU int8.')
+    result = _transcribe(path, {**settings, 'asr_device': 'cpu'}, check, expected_text)
+    # Persist through the caller's normal project save; subsequent clips and
+    # future jobs do not keep retrying the unavailable GPU. TTS is unaffected.
+    settings['asr_device'] = 'cpu'
+    return result
+
+
+def _transcribe(path, settings, check=lambda: None, expected_text=None):
     from faster_whisper import WhisperModel
     key = (settings['asr_model'], settings['asr_device'])
     if key not in _asr_cache:
         _asr_cache.clear()
         _asr_cache[key] = WhisperModel(key[0], device=key[1], compute_type='int8' if key[1] == 'cpu' else 'float16', download_root=str(store.DATA / 'models'))
     language = {'Vietnamese': 'vi', 'English': 'en', 'Chinese': 'zh'}.get(settings['language']) if expected_text else None
-    segments, info = _asr_cache[key].transcribe(str(path), word_timestamps=True, vad_filter=True, beam_size=5, language=language, initial_prompt=expected_text)
+    # Supplying the complete script as Whisper's prior context can make it
+    # recognize only the final sentence of a long narration. Decode the audio
+    # independently, then align the known text to those real timing anchors.
+    segments, info = _asr_cache[key].transcribe(str(path), word_timestamps=True, vad_filter=True, beam_size=5, language=language)
     result = []
     timed_words = []
     for segment in segments:
