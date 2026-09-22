@@ -182,9 +182,9 @@ def test_export_does_not_generate_audio_for_stale_story_plan(voice_project):
     assert calls == []
 
 
-def test_clone_without_reference_transcript_fails_before_tts(voice_project):
+def test_clone_missing_reference_file_fails_before_tts(voice_project):
     project, calls = voice_project
     project['settings'].update(voice_mode='clone',voice_reference='sample.wav',voice_reference_text='')
-    with pytest.raises(ValueError,match='lời được đọc'):
+    with pytest.raises(ValueError,match='Không tìm thấy audio'):
         providers.synthesize(project,lambda *a:None,lambda:None)
     assert calls == []

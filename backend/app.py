@@ -15,7 +15,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from . import store, providers
+from . import store, providers, preferences
 from .models import Model, ProjectEdit, Settings
 from .media import prepare, transcribe, parse_srt, Cancelled, FFMPEG
 from .render import render
@@ -24,6 +24,15 @@ from .power import keep_awake
 
 QUEUE = queue.Queue()
 STOP = threading.Event()
+
+
+def prepare_job_story(project, kind, report, check):
+    from .story import can_resume_story
+    check()
+    if kind == 'all' and can_resume_story(project):
+        report(88, 'Dùng lại kịch bản đã đạt; tiếp tục tạo giọng và dựng video…')
+        return project
+    return providers.analyze(project, report, check)
 
 
 def work():
@@ -60,7 +69,7 @@ def work():
                     project['exports'] = []
                     store.save(project)
                 if kind in ('analyze', 'all'):
-                    project = providers.analyze(project, report, check)
+                    project = prepare_job_story(project, kind, report, check)
                 if kind in ('localize', 'language', 'analyze', 'all', 'voice') or kind.startswith('voice:'):
                     project = providers.localize(project, report, check)
                 if kind in ('voice', 'language', 'all') or kind.startswith('voice:'):
@@ -84,7 +93,7 @@ def work():
         except Cancelled as e:
             store.update_job(jid, state='cancelled', message=str(e))
         except Exception as e:
-            message = str(e).replace(providers.key(), '[KEY]') if providers.key() else str(e)
+            message = providers.redact(str(e))
             message = re.sub(r'sk-[A-Za-z0-9_-]+', '[KEY]', message)
             store.update_job(jid, state='failed', message='Tác vụ chưa hoàn tất', error=message[-5000:])
         finally:
@@ -117,7 +126,7 @@ async def local_mutations(request: Request, call_next):
 
 @app.exception_handler(ValueError)
 async def value_error(request, exc):
-    return JSONResponse({'detail': str(exc)}, status_code=422)
+    return JSONResponse({'detail': providers.redact(str(exc))}, status_code=422)
 
 
 @app.exception_handler(KeyError)
@@ -130,7 +139,12 @@ class URLInput(Model):
 
 
 class KeyInput(Model):
+    provider: Literal['openai', 'gemini'] = 'openai'
     api_key: str
+
+
+class GeminiCheckInput(Model):
+    model: str
 
 
 class JobInput(Model):
@@ -160,7 +174,7 @@ def editable(pid):
 
 @app.get('/api/health')
 def health():
-    return {'ok': True, 'ffmpeg': bool(shutil.which(FFMPEG) or Path(FFMPEG).is_file()), 'codex': bool(providers.codex_binary()), 'api_key': bool(providers.key()), 'version': '0.1.0'}
+    return {'ok': True, 'ffmpeg': bool(shutil.which(FFMPEG) or Path(FFMPEG).is_file()), 'codex': bool(providers.codex_binary()), 'api_key': bool(providers.key()), 'gemini_api_key': bool(providers.key('gemini')), 'openai_key_source': providers.key_source('openai'), 'gemini_key_source': providers.key_source('gemini'), 'version': '0.1.0'}
 
 
 @app.get('/api/omnivoice')
@@ -174,10 +188,39 @@ def omnivoice_status():
         return {'ok': False, 'message': 'Không kết nối được OmniVoice ở cổng 8001.'}
 
 
+@app.post('/api/gemini/models')
+def gemini_models():
+    from .gemini import list_models
+    try:
+        return {'models': list_models(providers.key('gemini'))}
+    except RuntimeError as exc:
+        raise HTTPException(502, providers.redact(str(exc))) from None
+
+
+@app.post('/api/gemini/check')
+def gemini_check(body: GeminiCheckInput):
+    from .gemini import check_model
+    try:
+        return check_model(body.model, providers.key('gemini'))
+    except RuntimeError as exc:
+        raise HTTPException(502, providers.redact(str(exc))) from None
+
+
 @app.post('/api/key')
 def set_key(body: KeyInput):
-    providers.SESSION_KEY = body.api_key.strip()
-    return {'configured': bool(providers.key()), 'storage': 'session'}
+    from . import credentials
+    # Persist before changing the active session: a failed write must not look
+    # like a successful save to the user.
+    try:
+        credentials.set_key(body.provider, body.api_key.strip())
+    except RuntimeError as exc:
+        raise HTTPException(422, str(exc)) from None
+    if body.provider == 'gemini':
+        providers.GEMINI_SESSION_KEY = ''
+    else:
+        providers.SESSION_KEY = ''
+    return {'provider': body.provider, 'configured': bool(providers.key(body.provider)),
+            'storage': 'local_encrypted', 'source': providers.key_source(body.provider)}
 
 
 def present_project(project):
@@ -197,6 +240,11 @@ def present_project(project):
 @app.get('/api/projects')
 def list_projects():
     return [present_project(p) for p in store.list_projects()]
+
+
+@app.get('/api/preferences')
+def get_preferences():
+    return preferences.status()
 
 
 @app.post('/api/projects/url')
@@ -233,6 +281,16 @@ async def upload_video(file: UploadFile = File(...)):
 @app.get('/api/projects/{pid}')
 def get_project(pid: str):
     return present_project(store.read(pid))
+
+
+@app.post('/api/projects/{pid}/apply-preferences')
+def apply_preferences(pid: str):
+    with store.LOCK:
+        editable(pid)
+        project, changed = preferences.apply(store.read(pid))
+        if changed:
+            project = store.save(project)
+        return present_project(project)
 
 
 @app.put('/api/projects/{pid}')
@@ -280,7 +338,8 @@ def edit_project(pid: str, body: ProjectEdit):
         project['exports'] = []
         project['preview_exports'] = []
         build(project)  # validate ranges before persisting
-        return present_project(store.save(project))
+        project = preferences.save_project(project)
+        return present_project(project)
 
 
 @app.get('/api/projects/{pid}/timeline')
@@ -340,9 +399,11 @@ async def upload_reference(pid: str, file: UploadFile = File(...)):
         store.asset(pid, relative).write_bytes(content)
         project['settings']['voice_reference'] = relative
         project['settings']['voice_reference_text'] = ''
+        project['settings']['voice_reference_hash'] = ''
         project['exports'] = []
         project['preview_exports'] = []
-        return present_project(store.save(project))
+        project = preferences.save_project(project)
+        return present_project(project)
 
 
 @app.get('/api/projects/{pid}/document')

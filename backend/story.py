@@ -1,7 +1,9 @@
 """Whole-source story planning and validated highlight selection."""
 import copy
 import json
+import math
 import re
+from pydantic import ValidationError
 from .models import StoryAnswer
 
 
@@ -68,6 +70,133 @@ def output_budget(settings, source_duration=None):
     raise ValueError('Chọn Một video tóm tắt hoặc Nhiều phần trước khi chạy toàn bộ.')
 
 
+def duration_budget_stats(result, project):
+    """Return the requested and feasible duration budget for an editorial plan.
+
+    The source can only be played once (the hook is the sole intentional
+    repeat), so a requested duration longer than the source must not turn into
+    an impossible 75% requirement.  When the source can satisfy the request,
+    however, every part still has to reach the strict 75% lower bound.
+    """
+    settings = project['settings']
+    source = float(project['metadata']['duration'])
+    count, target = output_budget(settings, source)
+    hook_seconds = float(result.get('hook', {}).get('end', 0)) - float(result.get('hook', {}).get('start', 0))
+    hook_seconds = max(0.0, hook_seconds)
+    feasible_total = source + hook_seconds
+    requested_min_total = target * .75 * count
+    # If the requested total cannot fit in the source, lower the bound only to
+    # the amount that can physically be assembled, never below ten seconds per
+    # part.  This preserves strict 75–100% checking whenever feasible.
+    feasible_min_total = min(requested_min_total, source * .75)
+    minimum = max(10.0, feasible_min_total / count)
+    totals = {part: 0.0 for part in range(1, count + 1)}
+    totals[1] = hook_seconds
+    for item in result.get('selections', []):
+        part = int(item.get('part', 0))
+        if part in totals:
+            totals[part] += float(item['end']) - float(item['start'])
+    max_clip = 25.0 if storytelling(settings) else 15.0
+    clip_floor = {part: max(1, int(math.ceil(max(0.0, minimum - (hook_seconds if part == 1 else 0)) / max_clip)))
+                  for part in totals}
+    return {
+        'count': count, 'target': float(target), 'source': source,
+        'hook': hook_seconds, 'feasible_total': feasible_total,
+        'minimum': minimum, 'minimum_total': minimum * count,
+        'totals': totals, 'clip_floor': clip_floor, 'max_clip': max_clip,
+    }
+
+
+def _duration_budget_error(stats, part, total):
+    minimum, target = stats['minimum'], stats['target']
+    if total < max(10.0, minimum) - .05:
+        shortage = max(0.0, minimum - total)
+        clips = max(1, int(math.ceil(shortage / stats['max_clip'])))
+        return (f'DURATION_BUDGET_FAILURE: Phần {part} dài {total:.1f}s; cần gần mục tiêu {target:g}s '
+                f'(tối thiểu {minimum:.1f}s), đang thiếu {shortage:.1f}s; cần thêm ít nhất {clips} cảnh mới '
+                'từ nguồn, không lặp cảnh, không freeze và không đệm im lặng.')
+    if total > target + .05:
+        return (f'DURATION_BUDGET_FAILURE: Phần {part} dài {total:.1f}s; vượt mục tiêu tối đa {target:g}s. '
+                'Rút bớt cảnh thay vì tăng tốc, lặp cảnh hoặc chèn đoạn im lặng.')
+    return ''
+
+
+def _compact_overlong_plan(result, project):
+    """Drop low-priority optional clips when the model exceeds a hard target.
+
+    This is a deterministic safety pass for a common model failure: selecting
+    a sound 9-minute story but 10 minutes of non-overlapping source footage.
+    It preserves the opening, ending, at least one development clip, and all
+    source order. It never duplicates, freezes, pads, or invents footage.
+    """
+    settings = project['settings']
+    duration = float(project['metadata']['duration'])
+    count, target = output_budget(settings, duration)
+    selections = result.get('selections', [])
+    if count != 1 or not selections:
+        return result
+    hook = result.get('hook', {})
+    hook_seconds = max(0.0, float(hook.get('end', 0)) - float(hook.get('start', 0)))
+    def total(items):
+        return hook_seconds + sum(float(x['end']) - float(x['start']) for x in items)
+    if total(selections) <= target + .05:
+        return result
+    candidates = [
+        (index, item) for index, item in enumerate(selections)
+        if item.get('section') == 'development'
+        and index not in (0, len(selections) - 1)
+    ]
+    # Remove lowest-priority optional footage first, preferring a longer clip
+    # when priorities tie so one operation can resolve a modest overrun.
+    candidates.sort(key=lambda pair: (float(pair[1].get('priority', .5)),
+                                      -(float(pair[1]['end']) - float(pair[1]['start']))))
+    kept = list(selections)
+    for _, item in candidates:
+        if total(kept) <= target + .05:
+            break
+        if sum(1 for x in kept if x.get('section') == 'development') <= 1:
+            break
+        kept.remove(item)
+    return {**result, 'selections': kept}
+
+
+def duration_planning_instructions(project, rate=None):
+    """Supply numerical budgets before asking the model for editorial choices."""
+    stats = duration_budget_stats({}, project)
+    target = min(stats['target'], stats['source'] / stats['count'])
+    lines = [
+        'DURATION CONTRACT v3 (hard constraints; duration is playback length, not the span between first/last timestamps):',
+        f'Per part: minimum {stats["minimum"]:.1f}s, preferred {max(stats["minimum"], target * .9):.1f}–{target:.1f}s, maximum {stats["target"]:.1f}s.',
+        f'Total distinct source available: {stats["source"]:.3f}s. Each part must be nonempty; hook counts ONLY in part 1.',
+        'Before responding, sum end-start of EVERY selected clip per part and add hook duration to part 1. Check the total against the bounds.',
+        'Transcript cues and evidence timestamps are reference observations, NOT mandatory clip boundaries. You may keep supported moving footage between cues; do not reduce all scenes to short quoted sentences.',
+        'A point observation only proves the visible state at that instant; do not invent a continuous action from one still image.',
+    ]
+    if rate is not None:
+        ratio = project['settings'].get('original_dialogue_ratio', .15) if project['metadata'].get('has_audio', True) else 0
+        voiced_min = stats['minimum'] * (1 - min(.2, ratio + .025))
+        voiced_target = target * (1 - ratio)
+        lines.extend([
+            f'Budget approximately {voiced_target:.1f}s of narrated moving footage per part at {rate:.2f} words/syllables per second.',
+            f'That is roughly {round(voiced_target * rate)} words/syllables per part, distributed across clips; not one short sentence per story stage.',
+            f'At most 25s per narrated clip means at least {math.ceil(voiced_min / 25)} narrated clips per part to reach even the minimum; aim for {math.ceil(voiced_target / 20)} narrated clips near 20s, plus evidenced original-dialogue clips.',
+            'Select enough distinct footage first, then write narration to fit each selected clip. Do not pad silence, repeat footage or facts, or invent events to meet the budget.',
+        ])
+    return '\n'.join(lines)
+
+
+def duration_replan_instructions(result, project):
+    stats = duration_budget_stats(result, project)
+    rows = [{'part': part, 'actual_seconds': round(total, 3),
+             'minimum_seconds': round(stats['minimum'], 3), 'maximum_seconds': stats['target'],
+             'missing_to_minimum': round(max(0, stats['minimum'] - total), 3)}
+            for part, total in stats['totals'].items()]
+    return ('\nREBUILD THE EDIT PLAN FROM SOURCE: the previous clip selection fails the duration contract. '
+            'Do not just rewrite its narration or retain its small number of clips. Select a new complete chronological set of supported moving scenes, including the resolution, then write the full narration. '
+            'Do not exceed the source or repeat clips. Previous duration measurements (the short draft is intentionally omitted):\n' +
+            json.dumps(rows, separators=(',', ':')))
+
+
 def legacy_plan_fingerprint(project):
     from .providers import digest
     s = project['settings']
@@ -119,12 +248,22 @@ def plan_is_current(project):
     return saved == plan_fingerprint(project) or saved == legacy_plan_fingerprint(project)
 
 
-def validate_plan(result, project):
+def validate_plan(result, project, *, check_text=True):
     """Reject cut plans that discard the ending, repeat footage, or exceed budgets."""
+    if isinstance(result, dict) and isinstance(result.get('selections'), list):
+        result = copy.deepcopy(result)
+        for selection in result['selections']:
+            if isinstance(selection, dict):
+                selection.pop('id', None)
     result = copy.deepcopy(StoryAnswer.model_validate(result).model_dump())
     settings = project['settings']
     duration = project['metadata']['duration']
     count, seconds = output_budget(settings, duration)
+    # A hook may repeat one source moment, but every other selected range is
+    # unique moving footage.  Fail early when even ten seconds per part cannot
+    # fit in the source plus that one permitted hook repeat.
+    if count * 10 > duration + 7 + .05:
+        raise ValueError(f'Nguồn {duration:.1f}s không đủ cho {count} phần và hook; cần ít nhất {count * 10:.1f}s cảnh chuyển động cộng ngân sách hook.')
     hook = result['hook']
     if not (0 <= hook['start'] < hook['end'] <= duration and 3 <= hook['end']-hook['start'] <= 7):
         raise ValueError('Hook phải dài 3–7 giây và nằm trong nguồn.')
@@ -137,7 +276,11 @@ def validate_plan(result, project):
         raise ValueError('Các chặng giữa phải là diễn biến.')
     if not any(x['narration'].strip() for x in selected[1:-1]):
         raise ValueError('Phần diễn biến cần ít nhất một lời AI tóm tắt chặng chính.')
-    totals = {i:0.0 for i in range(1,count+1)}
+    stats = duration_budget_stats(result, project)
+    # Recompute selected durations below after timestamp validation. The
+    # planner stats are used for the feasible minimum/target only; reusing its
+    # totals here would count every selection twice.
+    totals = {i: 0.0 for i in range(1, count + 1)}
     totals[1] = round((hook['end']-hook['start'])*30)/30
     previous_end, previous_part = 0, 1
     for i, item in enumerate(selected):
@@ -164,11 +307,39 @@ def validate_plan(result, project):
         raise ValueError('AI phải chọn đủ đúng số phần yêu cầu, không để phần rỗng.')
     for part, total in totals.items():
         # Desired duration is an upper target; no fake frames or filler to reach it.
-        minimum = min(seconds*.75, duration*.75/count)
-        if total > seconds+.05 or total < max(10,minimum):
-            raise ValueError(f'Phần {part} dài {total:.1f}s; cần gần mục tiêu {seconds:g}s, không vượt mục tiêu.')
-    validate_narration_budget(result, project)
+        failure = _duration_budget_error(stats, part, total)
+        if failure:
+            raise ValueError(failure)
+    validate_narration_budget(result, project, check_text=check_text)
     return result
+
+
+def can_resume_story(project):
+    """Reuse an accepted edit after TTS failures without asking AI to recut it.
+
+    The new reference transcript can refine speech-rate estimates, but cannot
+    invalidate the accepted footage. Synthesis/render check actual WAV timing.
+    Full validation still applies to every newly generated plan.
+    """
+    # Legacy plans do not carry an evidence manifest/model binding, so they
+    # must be re-analyzed once instead of being silently reused after retries.
+    if not project.get('evidence_manifest') or not plan_is_current(project):
+        return False
+    if project.get('script_language') != project['settings']['language']:
+        return False
+    try:
+        validated = validate_plan(project['story_plan'], project, check_text=False)
+        narrations = project.get('narrations', [])
+        by_segment = {n.get('segment_id'): n for n in narrations if n.get('enabled') and n.get('text', '').strip()}
+        for item in validated['selections']:
+            if not item['narration'].strip():
+                continue
+            narration = by_segment.get(item['id'])
+            if not narration or abs(narration['start'] - item['start'] - item['narration_offset']) > .05:
+                return False
+        return True
+    except (ValueError, KeyError, TypeError):
+        return False
 
 
 def plan_story(project, report, check):
@@ -198,8 +369,9 @@ No narration about editing, timestamps or camera technique. No title or story in
 User writing style: {settings['draft_rule']}
 Review: {settings['review_rule']}
 WHOLE-SOURCE SUMMARY: {project['summary']}
-ALL SCENES: {json.dumps(project['scenes'],ensure_ascii=False)}
-ALL SOURCE DIALOGUE: {json.dumps(transcript,ensure_ascii=False)}'''
+ALL SCENES: {json.dumps(project['scenes'],ensure_ascii=False,separators=(',', ':'))}
+ALL SOURCE DIALOGUE: {json.dumps(transcript,ensure_ascii=False,separators=(',', ':'))}'''
+    rate = None
     if storytelling(settings):
         rate = speech_rate(project)
         target = settings.get('original_dialogue_ratio', .15)
@@ -217,18 +389,49 @@ Each narrated selection is 4–25 seconds of moving footage, at roughly {rate:.2
         prompt = re.sub(r'Keep every spoken sentence short enough.*?No voice crosses a part boundary\.',
                         'Follow the per-selection word budgets above. No voice crosses a part boundary.', prompt)
         prompt += '\nThese coverage rules override sparse-commentary style preferences. If evidence is limited, select less footage instead of inventing filler.'
+    prompt += '\n' + duration_planning_instructions(project, rate)
     report(88,'AI chọn highlight và viết mở đầu, diễn biến, kết thúc từ toàn bộ nguồn…')
     error = ''
     for attempt in range(3):
         check()
-        result = ask_ai(prompt + error, [], settings, store.project_dir(project['id']), check, StoryAnswer)
         try:
-            result = validate_plan(result,project)
+            result = ask_ai(prompt + error, [], settings, store.project_dir(project['id']), check, StoryAnswer)
+        except ValidationError as exc:
+            if attempt == 2:
+                raise
+            report(90, 'AI sửa cấu trúc kịch bản chưa hợp lệ…')
+            # Retry malformed model output, not authentication/quota/network
+            # errors. Exclude raw input values to keep the repair prompt small.
+            details = exc.errors(include_url=False, include_input=False)
+            error = '\nReturn a corrected JSON object. Previous schema validation errors: ' + json.dumps(details, ensure_ascii=False, default=str)[:2000]
+            continue
+        try:
+            candidate = _compact_overlong_plan(result, project)
+            try:
+                result = validate_plan(candidate, project)
+            except ValueError:
+                # Never accept a trim that breaks speech budgets or structure.
+                # Keep the original error/draft for the bounded AI repair.
+                result = validate_plan(result, project)
             break
         except ValueError as exc:
-            if attempt==2: raise
+            if attempt == 2:
+                if storytelling(settings) and count == 1:
+                    fitted = _compact_overlong_plan(result, project)
+                    stats = duration_budget_stats(fitted, project)
+                    if stats['minimum'] <= stats['totals'][1] <= stats['target'] + .05:
+                        # The selected footage is sufficient, but the model
+                        # cannot jointly satisfy arithmetic and long narration.
+                        # Fix timing in code and ask only for bounded prose.
+                        from .story_schedule import write_scheduled
+                        result = write_scheduled(fitted, project, ask_ai, store.project_dir(project['id']), report, check)
+                        break
+                raise
             report(90,'AI điều chỉnh cảnh và lời dẫn cho đúng thời lượng…')
-            error = '\nRevise the following draft to fix this validation error: '+str(exc)+'\nDRAFT: '+json.dumps(result,ensure_ascii=False)
+            if 'DURATION_BUDGET_FAILURE' in str(exc):
+                error = duration_replan_instructions(result, project)
+            else:
+                error = '\nRevise the following draft to fix this validation error: '+str(exc)+'\nDRAFT: '+json.dumps(result,ensure_ascii=False)
     hook = result['hook']
     settings.update(hook_enabled=True,hook_start=hook['start'],hook_end=hook['end'],title=result['title'],narration_mode='overlay',part_durations=[])
     project['hooks'] = [hook] + [h for h in project.get('hooks',[]) if h != hook]

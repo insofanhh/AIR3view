@@ -2,20 +2,66 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
 from pathlib import Path
 import requests
-from . import store
+from . import credentials, store
 from .media import NO_WINDOW, probe, transcribe
 from .models import AnalysisAnswer, TranslationAnswer
 
 SESSION_KEY = ''
+GEMINI_SESSION_KEY = ''
 
 
-def key():
-    return SESSION_KEY or os.environ.get('OPENAI_API_KEY', '')
+def _persistent_key(provider):
+    try:
+        return credentials.get_key(provider)
+    except (OSError, RuntimeError):
+        # A data folder copied from another Windows account contains valid
+        # ciphertext that DPAPI intentionally refuses to decrypt. Health and
+        # environment-key fallback must remain usable in that situation.
+        return ''
+
+
+def key(provider='openai'):
+    if provider == 'gemini':
+        return (GEMINI_SESSION_KEY or _persistent_key('gemini')
+                or os.environ.get('GEMINI_API_KEY', '') or os.environ.get('GOOGLE_API_KEY', ''))
+    return SESSION_KEY or _persistent_key('openai') or os.environ.get('OPENAI_API_KEY', '')
+
+
+def key_source(provider='openai'):
+    """Describe the active credential source without revealing its value."""
+    if provider == 'gemini':
+        persisted = _persistent_key('gemini')
+        if GEMINI_SESSION_KEY:
+            return 'local_encrypted' if GEMINI_SESSION_KEY == persisted else 'session'
+        if persisted:
+            return 'local_encrypted'
+        if os.environ.get('GEMINI_API_KEY', '') or os.environ.get('GOOGLE_API_KEY', ''):
+            return 'environment'
+        return 'none'
+    persisted = _persistent_key('openai')
+    if SESSION_KEY:
+        return 'local_encrypted' if SESSION_KEY == persisted else 'session'
+    if persisted:
+        return 'local_encrypted'
+    if os.environ.get('OPENAI_API_KEY', ''):
+        return 'environment'
+    return 'none'
+
+
+def redact(message):
+    secrets = (SESSION_KEY, GEMINI_SESSION_KEY, *credentials.stored_values(),
+               os.environ.get('OPENAI_API_KEY', ''), os.environ.get('GEMINI_API_KEY', ''),
+               os.environ.get('GOOGLE_API_KEY', ''))
+    for secret in secrets:
+        if secret:
+            message = message.replace(secret, '[KEY]')
+    return re.sub(r'AIza[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]+', '[KEY]', message)
 
 
 def digest(value):
@@ -34,14 +80,27 @@ def codex_error(details):
 
 def ask_ai(prompt, images, settings, folder, check, response_model=AnalysisAnswer):
     schema = response_model.model_json_schema()
-    fingerprint = digest({'prompt': prompt, 'images': [(str(p), p.stat().st_mtime_ns) for p in images], 'provider': settings['provider'], 'model': settings['model'], 'schema': schema})
+    # Preserve the established detailed-workflow cache identity. Efficient
+    # evidence stages add a content key to their prompt and use their own
+    # content-addressed cache, so this legacy cache remains compatible.
+    image_inputs = [(str(p), p.stat().st_mtime_ns) for p in images]
+    fingerprint = digest({'prompt': prompt, 'images': image_inputs, 'provider': settings['provider'], 'model': settings['model'], 'schema': schema})
     cache = folder / 'analysis-cache'
     cache.mkdir(exist_ok=True)
     output = cache / (fingerprint + '.json')
     if output.exists():
-        return response_model.model_validate_json(output.read_text('utf-8')).model_dump()
+        try:
+            return response_model.model_validate_json(output.read_text('utf-8')).model_dump()
+        except (OSError, ValueError):
+            # A killed process may leave a partial response. Ignore it and
+            # issue a new request; do not overwrite it until validation passes.
+            pass
     check()
-    if settings['provider'] == 'openai':
+    if settings['provider'] == 'gemini':
+        from .gemini import generate
+        text, usage = generate(prompt, images, settings['model'], schema, key('gemini'), check)
+        (cache / (fingerprint + '.usage.json')).write_text(json.dumps(usage), 'utf-8')
+    elif settings['provider'] == 'openai':
         if not key():
             raise ValueError('Chưa có API key. Nhập key trong Kết nối hoặc chọn Codex.')
         if not settings['model'].strip():
@@ -59,7 +118,7 @@ def ask_ai(prompt, images, settings, folder, check, response_model=AnalysisAnswe
                 check()
                 time.sleep(1)
         if not response.ok:
-            raise RuntimeError(f'OpenAI {response.status_code}: {response.text[:800]}')
+            raise RuntimeError(redact(f'OpenAI {response.status_code}: {response.text[:800]}'))
         data = response.json()
         text = ''.join(c.get('text', '') for item in data.get('output', []) for c in item.get('content', []) if c.get('type') == 'output_text')
         if data.get('status') != 'completed' or not text:
@@ -101,11 +160,76 @@ def ask_ai(prompt, images, settings, folder, check, response_model=AnalysisAnswe
             raise RuntimeError(codex_error(details))
         text = response_path.read_text('utf-8')
     result = response_model.model_validate_json(text).model_dump()
-    output.write_text(json.dumps(result, ensure_ascii=False), 'utf-8')
+    temporary = output.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps(result, ensure_ascii=False), 'utf-8')
+    temporary.replace(output)
+    (cache / (fingerprint + '.meta.json')).write_text(json.dumps({
+        'prompt_sha256': hashlib.sha256(prompt.encode('utf-8')).hexdigest(),
+        'raw_sha256': hashlib.sha256(text.encode('utf-8')).hexdigest(),
+        'image_inputs': image_inputs,
+        'provider': settings['provider'], 'model': settings['model'],
+    }, ensure_ascii=False), 'utf-8')
     return result
 
 
-def analyze(project, report, check):
+def normalize_analysis_times(result, start, end):
+    """Normalize model timestamps without hiding materially wrong answers.
+
+    Gemini occasionally follows the transcript cue a second or two beyond a
+    one-minute batch, or returns 0..60 offsets for later batches.  Both are
+    unambiguous and safe to repair.  Large/out-of-range answers still fail.
+    """
+    values = []
+    for scene in result['scenes']:
+        values.extend((scene['start'], scene['end']))
+    values.extend(item['start'] for item in result['narrations'])
+    for hook in result['hooks']:
+        values.extend((hook['start'], hook['end']))
+    span = end - start
+    relative = bool(start > 0 and values and min(values) >= -.1 and max(values) <= span + .1)
+    shift = start if relative else 0
+    tolerance = 3.0
+
+    def bounded(value, label):
+        value = float(value) + shift
+        if start - tolerance <= value < start:
+            return start
+        if end < value <= end + tolerance:
+            return end
+        if not start <= value <= end:
+            raise ValueError(f'AI trả {label} {value:g}s ngoài đoạn {start:g}–{end:g}s.')
+        return value
+
+    scenes = []
+    for scene in result['scenes']:
+        confidence = float(scene['confidence'])
+        if 1 < confidence <= 100:
+            confidence /= 100
+        if not 0 <= confidence <= 1:
+            raise ValueError(f'AI trả độ tin cậy {scene["confidence"]} ngoài khoảng 0–1.')
+        item = {**scene, 'start': bounded(scene['start'], 'mốc bắt đầu cảnh'),
+                'end': bounded(scene['end'], 'mốc kết thúc cảnh'), 'confidence': confidence}
+        if item['end'] <= item['start']:
+            raise ValueError('AI trả cảnh có mốc kết thúc không lớn hơn mốc bắt đầu.')
+        scenes.append(item)
+
+    narrations = []
+    for narration in result['narrations']:
+        item = {**narration, 'start': bounded(narration['start'], 'mốc lời dẫn')}
+        if item['start'] >= end or not item['text'].strip():
+            raise ValueError('AI trả lời dẫn thiếu nội dung hoặc nằm ở cuối đoạn không còn hình.')
+        narrations.append(item)
+
+    hooks = []
+    for hook in result['hooks']:
+        item = {**hook, 'start': bounded(hook['start'], 'mốc bắt đầu hook'),
+                'end': bounded(hook['end'], 'mốc kết thúc hook')}
+        if 1 <= item['end'] - item['start'] <= 12:
+            hooks.append(item)
+    return {**result, 'scenes': scenes, 'narrations': narrations, 'hooks': hooks}
+
+
+def _analyze_detailed(project, report, check):
     folder = store.project_dir(project['id'])
     settings = project['settings']
     if not project.get('metadata') or not project.get('frames'):
@@ -133,6 +257,7 @@ Quy tắc biên kịch: {settings['draft_rule']}
 Lời dẫn chỉ kể tình huống và hành động của nhân vật. Không bình luận về kỹ thuật dựng, thứ tự khung hình, đồng hồ camera hay timestamp; các mốc đó chỉ dùng trong evidence.
 Quy tắc tóm tắt: {settings['summary_rule']}
 Đoạn nguồn hiện tại: {start:.3f}–{end:.3f} giây. MỌI start/end là giây tuyệt đối của nguồn, nằm trong đoạn này.
+Nếu một câu transcript kéo qua cuối đoạn, vẫn giới hạn mọi mốc ở {end:.3f}; không trả timestamp vượt ranh giới.
 Chế độ dựng người dùng chọn: {settings['narration_mode']}.
 Nếu đoạn dài ít nhất 12 giây, đề xuất 1–3 câu lời dẫn ngắn, mỗi câu 1 ý giúp hiểu tình huống; không chỉ lặp lại thoại. Nếu đoạn ngắn hơn có thể trả narrations rỗng.
 Video luôn chạy tiếp khi AI nói, âm thanh nguồn bị tắt trong khoảng lời AI. Tuyệt đối không yêu cầu dừng hình; requires_insert=false. Chọn mốc kể đúng hành động đang diễn ra; ưu tiên lúc ít thoại hoặc hành động/thoại lặp lại, giữ các câu thoại quan trọng. Mỗi câu khoảng 8–18 từ, đủ ngắn để đọc trong 3–7 giây. Các mốc lời dẫn cách nhau ít nhất 12 giây và cách cuối đoạn ít nhất 8 giây. Không đặt câu đầu tiên ở cuối đoạn chỉ để lấp chỗ.
@@ -151,15 +276,12 @@ TRANSCRIPT DỮ LIỆU: {json.dumps(transcript, ensure_ascii=False)}'''
         if settings['review_enabled']:
             report(23 + 65 * batch / count, f'Kiểm tra kịch bản {batch+1}/{count}…')
             result = ask_ai(prompt + '\nKiểm tra/sửa bản nháp dưới đây theo quy tắc: ' + settings['review_rule'] + '\nBẢN NHÁP: ' + json.dumps(result, ensure_ascii=False), images, settings, folder, check)
+        result = normalize_analysis_times(result, start, end)
         for scene in result['scenes']:
-            if not (start <= scene['start'] < scene['end'] <= end + .1 and 0 <= scene['confidence'] <= 1):
-                raise ValueError('AI trả mốc cảnh/độ tin cậy không hợp lệ. Hãy sửa rule hoặc đổi model rồi phân tích lại.')
             scenes.append({**scene, 'id': f's{len(scenes)}'})
         for item in result['narrations']:
-            if not (start <= item['start'] < end) or not item['text'].strip():
-                raise ValueError('AI trả lời dẫn thiếu nội dung hoặc sai timestamp.')
             narrations.append({**item, 'id': f'n{len(narrations)}', 'enabled': True, 'audio': '', 'audio_hash': '', 'duration': 0, 'cues': []})
-        hooks.extend(h for h in result['hooks'] if start <= h['start'] < h['end'] <= end and 1 <= h['end']-h['start'] <= 12)
+        hooks.extend(result['hooks'])
         summary = result['summary']
     previous_title_language = project.get('title_language', project.get('script_language', ''))
     project.update(scenes=scenes, narrations=sorted(narrations, key=lambda n: n['start']), hooks=hooks, summary=summary, exports=[])
@@ -174,6 +296,15 @@ TRANSCRIPT DỮ LIỆU: {json.dumps(transcript, ensure_ascii=False)}'''
         project = plan_story(project, report, check)
     report(98, 'Đã có kịch bản và các đề xuất hook')
     return store.save(project)
+
+
+def analyze(project, report, check):
+    """Dispatch the economical workflow while retaining the detailed one."""
+    settings = project.get('settings') or {}
+    if settings.get('analysis_workflow', 'efficient') == 'efficient' and settings.get('output_mode'):
+        from .efficient_analysis import analyze_efficient
+        return analyze_efficient(project, report, check)
+    return _analyze_detailed(project, report, check)
 
 
 def localize(project, report, check):
@@ -232,6 +363,7 @@ def voice_hash(narration, settings):
     # Old design clips used a random speaker per request; regenerate them once.
     if settings['voice_mode'] == 'design':
         synthesis['voice_strategy'] = 'shared-reference-v1'
+        synthesis.pop('voice_reference_hash', None)
     # Mixing gain never changes synthesized speech.
     synthesis['voice_volume'] = 1.0
     payload = {'text': narration['text'], 'settings': synthesis}
@@ -334,8 +466,8 @@ def synthesize(project, report, check, only_id=None):
     folder = store.project_dir(project['id'])
     settings = project['settings']
     if settings['voice_mode'] == 'clone':
-        if not settings.get('voice_reference_text', '').strip():
-            raise ValueError('Điền đúng lời được đọc trong audio mẫu trước khi tạo giọng tham chiếu.')
+        from .reference_voice import ensure_transcript
+        ensure_transcript(project, report, check)
         # This old app default is prose, not a supported OmniVoice voice tag.
         if settings.get('voice_instruct') == 'Giọng kể tự nhiên, rõ ràng, cuốn hút.':
             settings['voice_instruct'] = ''

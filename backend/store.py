@@ -34,6 +34,8 @@ def init():
                 project['warnings'] = [w for w in project.get('warnings', []) if 'chèn dừng hình' not in w]
                 project['revision'] += 1
                 db.execute('UPDATE projects SET body=? WHERE id=?', (json.dumps(project, ensure_ascii=False), row['id']))
+    from . import preferences
+    preferences.initialize()
 
 
 def project_dir(pid):
@@ -63,7 +65,10 @@ def save(project):
 def create(name, source):
     pid = uuid.uuid4().hex
     project_dir(pid)
-    return save({'id': pid, 'name': name, 'source': source, 'created': time.time(), 'playback_version': 2, 'settings': Settings(output_mode='single', narration_style='storytelling', opening_delay=0).model_dump(), 'metadata': {}, 'scenes': [], 'frames': [], 'transcript': [], 'narrations': [], 'hooks': [], 'summary': '', 'exports': [], 'warnings': [], 'revision': 0})
+    settings = Settings(output_mode='single', narration_style='storytelling', opening_delay=0).model_dump()
+    from . import preferences
+    settings = preferences.settings_for_project(pid, settings)
+    return save({'id': pid, 'name': name, 'source': source, 'created': time.time(), 'playback_version': 2, 'settings': settings, 'metadata': {}, 'scenes': [], 'frames': [], 'transcript': [], 'narrations': [], 'hooks': [], 'summary': '', 'exports': [], 'warnings': [], 'revision': 0})
 
 
 def list_projects():

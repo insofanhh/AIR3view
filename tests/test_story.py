@@ -32,6 +32,31 @@ def planned(monkeypatch,p=None,raw=None):
     return plan_story(p,lambda *a:None,lambda:None)
 
 
+def test_final_story_repairs_schema_once_without_repeating_analysis(monkeypatch):
+    calls = []
+    def respond(prompt, *args):
+        calls.append(prompt)
+        if len(calls) == 1:
+            StoryAnswer.model_validate({'title': 'Incomplete'})
+        return copy.deepcopy(answer())
+    monkeypatch.setattr(providers, 'ask_ai', respond)
+    result = plan_story(project(), lambda *args: None, lambda: None)
+    assert len(calls) == 2
+    assert 'schema validation errors' in calls[1]
+    assert result['narrations'][-1]['section'] == 'ending'
+
+
+def test_final_story_does_not_retry_missing_key(monkeypatch):
+    calls = []
+    def unavailable(*args):
+        calls.append(True)
+        raise ValueError('Chưa có Gemini API key.')
+    monkeypatch.setattr(providers, 'ask_ai', unavailable)
+    with pytest.raises(ValueError, match='API key'):
+        plan_story(project(), lambda *args: None, lambda: None)
+    assert len(calls) == 1
+
+
 def test_single_video_selects_beginning_middle_ending_and_maps_voice(monkeypatch):
     p=planned(monkeypatch)
     p['transcript']=[{'id':'c1','start':27,'end':28,'text':'Listen','words':[{'text':'Listen','start':27,'end':28}]}]
@@ -170,7 +195,7 @@ def test_plan_is_written_after_entire_video_analysis(tmp_path,monkeypatch):
     p=store.create('Whole story',{'kind':'upload','file':'source.mp4'})
     p.update(metadata={'duration':120,'has_audio':True},frames=[{'time':0,'file':'a.jpg'},{'time':70,'file':'b.jpg'}],
              transcript=[{'id':'end','start':115,'end':118,'text':'The final outcome.'}])
-    p['settings'].update(review_enabled=False,summary_seconds=40,narration_style='highlights')
+    p['settings'].update(review_enabled=False,summary_seconds=40,narration_style='highlights',analysis_workflow='detailed')
     calls=[]
     def fake(prompt,images,settings,folder,check,response_model=None):
         calls.append(prompt)

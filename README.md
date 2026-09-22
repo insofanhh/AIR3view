@@ -128,7 +128,7 @@ Hoặc, khi CUDA hoạt động và GPU đủ bộ nhớ:
 
 Lần đầu sẽ tải model; chờ đến khi dịch vụ sẵn sàng rồi mở [OmniVoice local](http://127.0.0.1:8001). Giữ terminal này chạy. `Ctrl+C` dừng dịch vụ và giải phóng model.
 
-`--no-asr` bỏ model nhận dạng riêng của OmniVoice để tiết kiệm bộ nhớ. Với chế độ clone, nhập đúng lời nói của audio tham chiếu. AIR3view vẫn dùng faster-whisper riêng để nhận dạng nguồn và canh phụ đề. Khi thay file giọng mẫu, ô lời mẫu được xóa để tránh dùng nhầm bản chép của file cũ. Hướng dẫn giọng là thẻ OmniVoice hỗ trợ (ví dụ `male, low pitch`); để trống sẽ giữ giọng của audio, không nhập mô tả tự do.
+`--no-asr` bỏ model nhận dạng riêng của OmniVoice để tiết kiệm bộ nhớ. Với chế độ clone, AIR3view tự nhận dạng lời nói trong audio tham chiếu theo ngôn ngữ nguồn khi tạo giọng, rồi gửi phần text đó cho OmniVoice. Kết quả được cache theo bytes của file audio; dùng lại cùng file ở dự án khác không cần nhận dạng lại. AIR3view vẫn dùng faster-whisper riêng để nhận dạng nguồn và canh phụ đề. Hướng dẫn giọng là thẻ OmniVoice hỗ trợ (ví dụ `male, low pitch`); để trống sẽ giữ giọng của audio, không nhập mô tả tự do.
 
 Đây là bộ phiên bản tham chiếu, chưa phải lockfile toàn bộ phụ thuộc của OmniVoice. Khi cập nhật OmniVoice, kiểm tra lại hai endpoint `/_design_fn` và `/_clone_fn` trước khi chạy dự án lớn.
 
@@ -150,9 +150,9 @@ Mở lại terminal chạy AIR3view sau khi cài CLI. Trong tab **Kết nối**,
 
 ### Cách B — OpenAI API
 
-Trong **Kết nối**, chọn **OpenAI API key**, nhập key, bấm **Áp dụng key** và nhập tên model có khả năng đọc ảnh/Structured Outputs. Adapter gửi request đến Responses API. Chi phí API phụ thuộc model và lượng ảnh/transcript.
+Trong **Kết nối**, chọn **OpenAI API key**, nhập key, bấm **Lưu key trên máy** và nhập tên model có khả năng đọc ảnh/Structured Outputs. Adapter gửi request đến Responses API. Chi phí API phụ thuộc model và lượng ảnh/transcript.
 
-Key nhập trong giao diện chỉ giữ trong bộ nhớ server đến khi dừng ứng dụng. Có thể đặt biến môi trường `OPENAI_API_KEY` trước khi chạy server. Không ghi key vào mã nguồn, README hoặc JSON dự án. Ứng dụng **không tự đọc file `.env`**.
+Key nhập trong giao diện được lưu mã hóa trên máy bằng Windows DPAPI, dùng lại sau khi khởi động AIR3view và khi chuyển dự án. Key gắn với tài khoản Windows hiện tại, không nằm trong JSON dự án hay mã nguồn. Nút **Xóa key đã lưu** xóa bản lưu cục bộ. Có thể đặt biến môi trường `OPENAI_API_KEY` trước khi chạy server; nếu còn biến môi trường, ứng dụng vẫn có thể dùng key đó sau khi xóa bản lưu. Ứng dụng **không tự đọc file `.env`**.
 
 ## 5. Khởi động và kiểm tra
 
@@ -196,6 +196,37 @@ Thời lượng đặt là **mục tiêu tối đa đã bao gồm hook**. AI c�
 
 AI đọc các đoạn của toàn bộ nguồn trước khi lập bản biên tập tổng thể. Cấu trúc ba phần xuyên suốt từ video đầu đến video cuối, không bắt buộc lặp lại phần giới thiệu ở mỗi file. Bài học phải dựa trên nội dung; kết quả chưa rõ cần được nói rõ. Cần duyệt lại tên riêng và kết luận do AI tạo.
 
+### Workflow phân tích tiết kiệm
+
+Trong **Rule**, chọn cách phân tích:
+
+- **Tiết kiệm · đọc lời thoại trước** (mặc định): lấy phụ đề nguồn, đọc toàn bộ transcript để lập diễn biến có mốc, kiểm tra một tập khung hình đại diện và các đoạn cần xác minh, rồi viết kịch bản cuối. Không tạo lời dẫn nháp cho từng phút để bỏ đi ở bước cuối. Video dài có thể cần chia transcript/ảnh thành nhiều nhóm.
+- **Chi tiết · đọc từng phút**: giữ quy trình đọc ảnh và lời thoại từng phút, phù hợp khi cần xem hình kỹ hơn. Bật lượt kiểm tra sẽ gửi lại mỗi nhóm cho AI rà soát.
+
+Chế độ tiết kiệm vẫn lấy hình ở đầu/cuối nguồn, phân bố xuyên suốt và ưu tiên đoạn không có thoại hoặc tình tiết chưa rõ. Nó không xem mọi khung hình; các hành động rất ngắn vẫn có thể bị bỏ sót. Khi bật kiểm tra lại, chỉ các kết quả cần xác minh mới được rà soát thêm. Các quy tắc mốc cảnh, thời lượng, tỷ lệ thoại và kết thúc câu chuyện vẫn được kiểm tra trước khi lưu kịch bản.
+
+Ưu tiên phụ đề do kênh cung cấp; nếu không có thì thử phụ đề tự động YouTube. Phụ đề cần có văn bản và mốc hợp lệ; không lấy được thì nhận dạng audio trên máy. Bản lời nguồn được giữ riêng với bản dịch hiển thị.
+
+Kết quả đọc transcript và xác minh hình có cache riêng. Đổi số phần/thời lượng/cách viết chỉ lập lại kịch bản từ bằng chứng đã có; đổi transcript, hình, model hoặc quy tắc phân tích liên quan sẽ làm mới các bước phụ thuộc. Nếu bước viết kịch bản thất bại, dữ liệu bằng chứng đã hoàn thành vẫn được giữ để thử lại.
+
+Với video khoảng 20 phút có transcript tốt, mục tiêu là vài lượt gọi thay vì hơn 40 lượt khi quy trình từng phút có bật kiểm tra. Số lượt thực tế phụ thuộc độ dài nguồn, số đoạn chưa rõ và số lần sửa kết quả; không bảo đảm thời gian hay chi phí cố định.
+
+Trong **Kết nối**, có thể chọn `gemini-3.1-flash-lite` để ưu tiên chi phí nếu model này được Google trả trong danh sách của key. Một số key mới vẫn liệt kê `gemini-2.5-flash-lite` nhưng Google có thể từ chối model đó; ứng dụng không tự đổi model đã chọn. Không cần thêm Groq để dùng workflow này; ASR cloud chưa được tích hợp ở bản này.
+
+### Dùng Gemini API thay Codex trên máy
+
+Trong tab **Kết nối**, chọn **Google Gemini API key**, nhập key rồi bấm **Lưu key trên máy**. AIR3view tải danh sách model mà key nhìn thấy; chọn model có khả năng đọc ảnh và bấm **Kiểm tra kết nối & model**. Sau khi lưu dự án, các bước phân tích khung hình, đọc transcript, viết/dịch lời dẫn và chọn highlight sẽ dùng Gemini thay cho Codex CLI. ASR và OmniVoice vẫn chạy cục bộ theo cấu hình riêng.
+
+Gemini key được lưu mã hóa riêng với OpenAI key và dùng chung cho các dự án, không cần nhập lại mỗi lần mở ứng dụng trên cùng tài khoản Windows. Có thể đặt `GEMINI_API_KEY` hoặc `GOOGLE_API_KEY` trong môi trường trước khi chạy server. Khi chuyển sang máy hoặc tài khoản Windows khác, cần nhập lại API key; dữ liệu mã hóa không thay thế việc cấu hình key trên máy mới.
+
+### Cấu hình dùng chung giữa các dự án
+
+Các tùy chọn trong **Đầu ra, Bố cục, Giọng, Rule, Kết nối** được tự lưu làm cấu hình dùng chung khi bạn lưu/chỉnh dự án. Dự án mới và dự án được mở tiếp theo nhận cấu hình đã lưu gần nhất, gồm provider/model, ASR, URL OmniVoice, ngôn ngữ, thời lượng, màu/chữ, âm lượng, cách kể và quy tắc AI. File giọng tham chiếu cùng kết quả nhận dạng tự động có bản lưu chung, được sao chép vào dự án đích để sử dụng mà không phải tải lên hoặc nhận dạng lại cùng file.
+
+Tiêu đề câu chuyện, bật/tắt và mốc hook, cùng danh sách mốc chia phần thủ công vẫn thuộc video nguồn. Dự án đang xử lý giữ cấu hình của tác vụ đang chạy; mở lại dự án sau khi tác vụ kết thúc để nhận cấu hình chung. Nếu đổi các tùy chọn ảnh hưởng đến kịch bản, cần phân tích lại trước khi tạo giọng/xuất video; lời dẫn và kết quả cũ không tự được viết lại.
+
+Ở lần nâng cấp đầu tiên, ứng dụng lấy cấu hình từ dự án được cập nhật gần nhất. Sau đó chỉ thao tác lưu của người dùng cập nhật cấu hình chung; kết quả do AI tự tạo không trở thành mặc định cho các video khác.
+
 Đổi chế độ, số phần, thời lượng, ngôn ngữ, hook hoặc quy tắc sẽ yêu cầu phân tích lại trước khi xuất/tạo giọng cho bản chọn cảnh mới. Dự án cũ vẫn xem được; chọn chế độ ở tab Đầu ra trước khi chạy mới. Phân tích lại thay lời dẫn hiện tại, nên sao lưu nếu cần giữ bản cũ.
 
 ### Phụ đề và âm thanh
@@ -222,7 +253,9 @@ AIR3view/
 ├── scripts/              Kiểm tra và xác minh output
 ├── tests/                Kiểm thử, có test FFmpeg thực
 ├── data/                 Dữ liệu local, không đưa vào Git
-│   ├── studio.sqlite3    Metadata dự án và trạng thái job
+│   ├── studio.sqlite3    Metadata dự án, trạng thái job và cấu hình dùng chung
+│   ├── _preferences/    Bản lưu giọng tham chiếu dùng chung
+│   ├── .private/        API key được mã hóa bằng Windows DPAPI
 │   ├── models/           Model ASR đã tải
 │   └── <project_id>/     Nguồn, proxy, WAV, frames, giọng, cache và bản xuất
 ├── requirements.txt      Các phụ thuộc Python trực tiếp được ghim phiên bản
@@ -293,7 +326,7 @@ Có thể chọn **Kết nối → Thiết bị ASR → CPU** thủ công rồi 
 
 ### OmniVoice chưa kết nối / không tạo được giọng
 
-Mở `http://127.0.0.1:8001`, xem terminal OmniVoice đã nạp model xong chưa. Chạy đúng cổng, không bật chia sẻ public. Kiểm tra URL trong Kết nối là `http://127.0.0.1:8001`. Nếu API báo thiếu endpoint, dùng revision/Gradio tham chiếu ở bước 3. Với clone và `--no-asr`, phải có text của audio mẫu.
+Mở `http://127.0.0.1:8001`, xem terminal OmniVoice đã nạp model xong chưa. Chạy đúng cổng, không bật chia sẻ public. Kiểm tra URL trong Kết nối là `http://127.0.0.1:8001`. Nếu API báo thiếu endpoint, dùng revision/Gradio tham chiếu ở bước 3. Với clone và `--no-asr`, AIR3view tự nhận dạng audio mẫu trước khi gửi text cho OmniVoice; lần đầu có thể mất thêm thời gian, còn cùng file sẽ dùng cache.
 
 ### Codex hết hạn mức hoặc không tìm thấy lệnh
 

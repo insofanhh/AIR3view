@@ -51,7 +51,7 @@ class Narration(Model):
 
 
 class Settings(Model):
-    provider: Literal['codex', 'openai'] = 'codex'
+    provider: Literal['codex', 'openai', 'gemini'] = 'codex'
     model: str = ''
     language: str = 'Vietnamese'
     asr_model: str = 'small'
@@ -90,12 +90,14 @@ class Settings(Model):
     voice_mode: Literal['design', 'clone'] = 'design'
     voice_reference: str = ''
     voice_reference_text: str = ''
+    voice_reference_hash: str = ''
     voice_instruct: str = ''
     voice_speed: float = Field(default=1, ge=0.5, le=1.5)
     voice_gender: str = 'Auto'
     voice_steps: int = Field(default=32, ge=4, le=64)
     narration_style: Literal['highlights', 'storytelling'] = 'highlights'
     original_dialogue_ratio: float = Field(default=.15, ge=.1, le=.2)
+    analysis_workflow: Literal['efficient', 'detailed'] = 'efficient'
     review_enabled: bool = True
     draft_rule: str = 'Kể diễn biến chính xác theo hình và lời thoại. Câu ngắn, cuốn hút, không bịa tình tiết. Xen lời dẫn ở khoảng nghỉ; giữ các câu thoại quan trọng. Mỗi câu gắn mốc video và bằng chứng.'
     review_rule: str = 'Sửa lỗi tên, tình tiết và logic; bỏ câu thừa và bình luận cá nhân. Kiểm tra mốc hình khớp từng ý. Giữ đúng cấu trúc JSON.'

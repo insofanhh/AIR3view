@@ -4,6 +4,7 @@ frontend/dist/
 data/
 __pycache__/
 .pytest_cache/
+.pytest-tmp-*/
 *.pyc
 .env
 *.log
