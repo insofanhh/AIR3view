@@ -39,7 +39,7 @@ class Narration(Model):
     text: str = Field(max_length=3000)
     enabled: bool = True
     evidence: str = ''
-    section: Literal['opening', 'development', 'ending'] = 'development'
+    section: Literal['hook', 'opening', 'development', 'ending'] = 'development'
     segment_id: str = ''
     part: int = Field(default=1, ge=1, le=100)
     audio: str = ''
@@ -67,8 +67,10 @@ class Settings(Model):
     subtitle_size: int = Field(default=48, ge=24, le=80)
     subtitle_color: str = Field(default='#ffffff', pattern=r'^#[0-9a-fA-F]{6}$')
     subtitle_position: Literal['below', 'inside'] = 'inside'
+    subtitle_bottom_margin: int = Field(default=10, ge=0, le=200)
     subtitles: bool = True
     source_subtitle_blur: bool = False
+    source_subtitle_blur_height: float = Field(default=22, ge=5, le=50)
     subtitle_highlight: bool = True
     subtitle_highlight_color: str = Field(default='#38bdf8', pattern=r'^#[0-9a-fA-F]{6}$')
     original_volume: float = Field(default=1, ge=0, le=2)
@@ -86,6 +88,9 @@ class Settings(Model):
     part_seconds: float = Field(default=60, ge=10, le=1800)
     split_mode: Literal['exact', 'natural'] = 'natural'
     part_durations: list[float] = Field(default_factory=list, max_length=200)
+    tts_provider: Literal['vieneu', 'omnivoice'] = 'vieneu'
+    vieneu_url: str = 'http://localhost:7860'
+    vieneu_voice: str = ''
     omnivoice_url: str = 'http://127.0.0.1:8001'
     voice_mode: Literal['design', 'clone'] = 'design'
     voice_reference: str = ''
@@ -96,10 +101,13 @@ class Settings(Model):
     voice_gender: str = 'Auto'
     voice_steps: int = Field(default=32, ge=4, le=64)
     narration_style: Literal['highlights', 'storytelling'] = 'highlights'
-    original_dialogue_ratio: float = Field(default=.15, ge=.1, le=.2)
+    original_dialogue_ratio: float = Field(default=.15, ge=.1, le=1)
     analysis_workflow: Literal['efficient', 'detailed'] = 'efficient'
+    production_workflow: Literal['plan_first', 'legacy'] = 'legacy'
+    duration_min_ratio: float = Field(default=.9, ge=.6, le=1)
+    render_encoder: Literal['auto', 'cpu', 'nvenc'] = 'auto'
     review_enabled: bool = True
-    draft_rule: str = 'Kể diễn biến chính xác theo hình và lời thoại. Câu ngắn, cuốn hút, không bịa tình tiết. Xen lời dẫn ở khoảng nghỉ; giữ các câu thoại quan trọng. Mỗi câu gắn mốc video và bằng chứng.'
+    draft_rule: str = 'AI là người dẫn chuyện, tái hiện cùng nội dung, tình huống và sự kiện bằng cách kể mới; không đổi nhân vật, diễn biến, kết quả hoặc thêm suy đoán. Không trích nguyên lời dẫn, lời bình hoặc lời AI trong video nguồn. Ưu tiên hội thoại thật, phản ứng tự nhiên và hành động nổi bật có bằng chứng. Chỉ lưu mốc thời gian ở start/end/evidence; không đọc hoặc đưa mốc dẫn chứng như At 138 seconds vào lời kể hay phụ đề. Giữ ngày giờ và thời lượng thực của sự kiện khi cần thiết.'
     review_rule: str = 'Sửa lỗi tên, tình tiết và logic; bỏ câu thừa và bình luận cá nhân. Kiểm tra mốc hình khớp từng ý. Giữ đúng cấu trúc JSON.'
     summary_rule: str = 'Tóm tắt ngắn, khách quan tới hết đoạn: nhân vật, quan hệ, sự kiện và tình huống hiện tại; giữ các chi tiết cũ còn liên quan.'
 
@@ -135,10 +143,15 @@ class NarrationAnswer(Model):
 
 
 class HookAnswer(Model):
+    # Old stored hooks omit this flag; strict provider schemas still require
+    # every property to be present in newly generated responses.
+    model_config = ConfigDict(json_schema_extra={'required':['start','end','title','reason','original_audio','narration']})
     start: float
     end: float
     title: str
     reason: str
+    original_audio: bool = Field(default=True, json_schema_extra=lambda schema:schema.pop('default',None))
+    narration: str = Field(default='', json_schema_extra=lambda schema:schema.pop('default',None))
 
 
 class AnalysisAnswer(Model):

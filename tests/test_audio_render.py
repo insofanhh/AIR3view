@@ -61,3 +61,36 @@ def test_real_voice_mix_across_part_boundary(tmp_path,monkeypatch,mode,gated,bac
             assert amplitude(220, 1.65, 1.9)/amplitude(220, 1.1, 1.4) == pytest.approx(background,abs=.02)
         assert amplitude(880, .2, .8) > .01
         assert amplitude(880, 1.2, 1.8) < amplitude(880, .2, .8) * .02
+
+
+@pytest.mark.skipif(not shutil.which(FFMPEG),reason='FFmpeg required')
+def test_excluded_source_speech_is_silent_but_ai_and_other_ambience_survive(tmp_path,monkeypatch):
+    import av
+    import numpy as np
+    from backend.timeline import build
+    from backend.render import render_part
+    monkeypatch.setattr(store,'DATA',tmp_path)
+    monkeypatch.setattr(store,'DB',tmp_path/'test.sqlite3')
+    store.init()
+    p=store.create('Excluded source speech',{'kind':'upload','file':'source.mp4'})
+    folder=store.project_dir(p['id'])
+    run([FFMPEG,'-y','-f','lavfi','-i','testsrc2=size=240x180:rate=30','-f','lavfi','-i',
+         'sine=frequency=220:sample_rate=48000','-t','3','-c:v','libx264','-c:a','aac',folder/'source.mp4'])
+    run([FFMPEG,'-y','-f','lavfi','-i','sine=frequency=880:sample_rate=48000','-t','3',folder/'voice.wav'])
+    p['metadata']=probe(folder/'source.mp4')
+    p['settings'].update(output_mode=None,narration_mode='overlay',duck_volume=.4,render_encoder='cpu')
+    n=dict(id='n1',start=0,text='AIR3view narration',audio='voice.wav',duration=3,enabled=True,cues=[])
+    n['audio_hash']=voice_hash(n,p['settings']);p['narrations']=[n]
+    timeline=build(p,strict=True)
+    timeline['original_audio']=[]
+    timeline['source_mutes']=[dict(start=1,end=2)]
+    output=render_part(p,timeline,timeline['parts'][0],folder,lambda:None,width=360)
+    with av.open(str(store.asset(p['id'],output['file']))) as container:
+        samples=np.concatenate([f.to_ndarray()[0] for f in container.decode(audio=0)])
+    def amplitude(freq,a,b):
+        segment=samples[int(a*48000):int(b*48000)]
+        return abs(np.sum(segment*np.exp(-2j*np.pi*freq*np.arange(len(segment))/48000)))/len(segment)
+    assert amplitude(220,.2,.8)>.005
+    assert amplitude(220,1.2,1.8)<amplitude(220,.2,.8)*.02
+    assert amplitude(220,2.2,2.8)==pytest.approx(amplitude(220,.2,.8),rel=.05)
+    assert amplitude(880,1.2,1.8)>.01

@@ -11,6 +11,13 @@ def storytelling(settings):
     return settings.get('narration_style') == 'storytelling'
 
 
+def source_led(project):
+    """High retention can replace narration only with classified real speech."""
+    from .source_speech import active
+    return (storytelling(project['settings']) and project['settings'].get('original_dialogue_ratio',.15)>.5
+            and project.get('metadata',{}).get('has_audio',True) and active(project))
+
+
 def speech_units(text):
     return len(re.findall(r'[\u3400-\u9fff]|[^\W_\u3400-\u9fff]+', text, re.UNICODE))
 
@@ -36,27 +43,55 @@ def validate_narration_budget(result, project, check_text=True):
     if not storytelling(project['settings']):
         return
     items = result['selections']
+    from .story_bridges import validate as validate_structure
+    validate_structure(result,project,check_text)
+    from .retention import validate as validate_retention
+    validate_retention(result,project)
     hook = result['hook']['end'] - result['hook']['start']
     total = hook + sum(x['end']-x['start'] for x in items)
-    original = hook + sum(x['end']-x['start'] for x in items if not x['narration'].strip())
+    from .source_speech import active, allowed
+    classified = active(project)
+    hook_original = result['hook'].get('original_audio', True)
+    if project.get('hook_policy_version') and hook_original and result['hook'].get('narration','').strip():
+        raise ValueError('Hook dùng tiếng hiện trường không được chồng thêm lời AI.')
+    if classified and hook_original and not allowed(project, result['hook']['start'], result['hook']['end']):
+        raise ValueError('Hook giữ tiếng nguồn chưa được xác nhận là hội thoại thật.')
+    if project.get('hook_policy_version') and not hook_original and not result['hook'].get('narration','').strip():
+        raise ValueError('Hook không có tiếng hiện trường phải có lời mở tình huống bằng giọng AIR3view.')
+    original = (hook if hook_original else 0) + sum(x['end']-x['start'] for x in items if not x['narration'].strip())
     if project['metadata'].get('has_audio', True):
         target = project['settings'].get('original_dialogue_ratio', .15)
-        lower, upper = max(.1, target-.025), min(.2, target+.025)
-        if not lower-.001 <= original/total <= upper+.001:
-            raise ValueError(f'Thoại gốc đang chiếm {original/total:.1%}; cần {lower:.1%}–{upper:.1%}, tính cả hook. Chỉ giữ các câu gốc quan trọng, phần còn lại phải có lời kể AI.')
+        # Completed older edits were accepted with a 2.5-point tolerance.
+        # Preserve their exportability; new policy plans use the exact cap.
+        upper = min(.5,target+.025) if target<=.5 and project.get('source_policy_version') in (1,2) and not classified else target
+        if project.get('hook_policy_version'):
+            from .hook_policy import original_limit
+            upper=original_limit(project,total,result['hook'])/total
+        if original/total > upper+.001:
+            raise ValueError(f'Thoại gốc đang chiếm {original/total:.1%}; tối đa {target:.1%}, tính cả hook có tiếng. Chỉ giữ các câu gốc quan trọng, phần còn lại phải có lời kể AI.')
     rate = speech_rate(project) if check_text else None
+    if check_text and not hook_original and result['hook'].get('narration','').strip():
+        from .narration_language import wrong_language
+        line=result['hook']['narration']
+        if wrong_language(line,project['settings']['language']) or not hook*rate*.8 <= speech_units(line) <= hook*rate*1.2:
+            raise ValueError('Lời hook cần đúng ngôn ngữ và vừa thời lượng ở nhịp giọng đã chọn.')
     transcript = project.get('source_transcript') or project.get('transcript', [])
     for i, item in enumerate(items):
         seconds = item['end']-item['start']
         if item['narration_offset'] > .05:
             raise ValueError('Chế độ kể xuyên suốt bắt đầu lời dẫn ngay đầu cảnh; tách thoại gốc thành cảnh riêng.')
         if item['narration'].strip():
+            from .narration_language import wrong_language
+            if check_text and wrong_language(item['narration'], project['settings']['language']):
+                raise ValueError('Lời kể phải bằng English; không trả đoạn văn tiếng Việt cho đầu ra English.')
             units = speech_units(item['narration'])
             if check_text and not seconds*rate*.8 <= units <= seconds*rate*1.2:
                 raise ValueError(f'Cảnh {i+1} dài {seconds:.1f}s cần khoảng {round(seconds*rate*.8)}–{round(seconds*rate*1.2)} từ/âm tiết lời kể, hiện có {units}. Viết đủ bối cảnh và diễn biến, không lặp ý để lấp thời gian.')
             if seconds > 25:
                 raise ValueError('Chia lời kể thành các cảnh tối đa 25 giây để giữ nhịp kể và canh giọng.')
         elif project['metadata'].get('has_audio', True):
+            if classified and not allowed(project, item['start'], item['end']):
+                raise ValueError('Cảnh giữ thoại gốc phải chứa trọn hội thoại thật, không chứa lời bình hoặc câu chưa rõ vai trò.')
             if not any(c['end']>item['start'] and c['start']<item['end'] for c in transcript):
                 raise ValueError('Cảnh giữ thoại gốc phải có lời thoại được nhận dạng trong nguồn.')
 
@@ -84,11 +119,14 @@ def duration_budget_stats(result, project):
     hook_seconds = float(result.get('hook', {}).get('end', 0)) - float(result.get('hook', {}).get('start', 0))
     hook_seconds = max(0.0, hook_seconds)
     feasible_total = source + hook_seconds
-    requested_min_total = target * .75 * count
+    min_ratio = project['settings'].get('duration_min_ratio', .75)
+    if project['settings'].get('production_workflow', 'legacy') == 'legacy':
+        min_ratio = .75
+    requested_min_total = target * min_ratio * count
     # If the requested total cannot fit in the source, lower the bound only to
     # the amount that can physically be assembled, never below ten seconds per
     # part.  This preserves strict 75–100% checking whenever feasible.
-    feasible_min_total = min(requested_min_total, source * .75)
+    feasible_min_total = min(requested_min_total, source * min_ratio)
     minimum = max(10.0, feasible_min_total / count)
     totals = {part: 0.0 for part in range(1, count + 1)}
     totals[1] = hook_seconds
@@ -107,6 +145,25 @@ def duration_budget_stats(result, project):
     }
 
 
+def duration_plan_manifest(result, project):
+    """Persist the fixed timing contract consumed by TTS and render stages."""
+    stats = duration_budget_stats(result, project)
+    slots = []
+    from .hook_policy import slots as narration_slots
+    for index, item in enumerate(narration_slots(result)):
+        source_duration = round(float(item['end']) - float(item['start']), 3)
+        slots.append({'id': item.get('id', f'sel{index}'), 'index': index,
+                      'part': item['part'], 'section': item['section'],
+                      'source_start': round(float(item['start']), 3),
+                      'source_end': round(float(item['end']), 3),
+                      'source_duration': source_duration,
+                      'voice_target': round(max(0, source_duration - .04), 3)
+                      if item.get('narration', '').strip() else 0})
+    return {'version': 1, 'mode': 'duration-first', 'target': stats['target'],
+            'minimum': stats['minimum'], 'source': stats['source'],
+            'hook': stats['hook'], 'slots': slots}
+
+
 def _duration_budget_error(stats, part, total):
     minimum, target = stats['minimum'], stats['target']
     if total < max(10.0, minimum) - .05:
@@ -122,42 +179,59 @@ def _duration_budget_error(stats, part, total):
 
 
 def _compact_overlong_plan(result, project):
-    """Drop low-priority optional clips when the model exceeds a hard target.
+    """Choose whole optional scenes within BOTH duration bounds, at 30fps.
 
-    This is a deterministic safety pass for a common model failure: selecting
-    a sound 9-minute story but 10 minutes of non-overlapping source footage.
-    It preserves the opening, ending, at least one development clip, and all
-    source order. It never duplicates, freezes, pads, or invents footage.
+    The prior greedy deletion could turn an overlong draft into an underlong
+    draft. Never publish such a trim: preserve it for explicit AI re-planning
+    when no complete-scene subset can fit. No source cuts or prose are changed.
     """
-    settings = project['settings']
-    duration = float(project['metadata']['duration'])
-    count, target = output_budget(settings, duration)
+    stats = duration_budget_stats(result, project)
     selections = result.get('selections', [])
-    if count != 1 or not selections:
+    if not selections:
         return result
-    hook = result.get('hook', {})
-    hook_seconds = max(0.0, float(hook.get('end', 0)) - float(hook.get('start', 0)))
-    def total(items):
-        return hook_seconds + sum(float(x['end']) - float(x['start']) for x in items)
-    if total(selections) <= target + .05:
+    chosen = set(range(len(selections)))
+    minimum = math.ceil((stats['minimum'] - .05) * 30)
+    maximum = math.floor((stats['target'] + .05) * 30)
+    lengths = [round(float(x['end'])*30)-round(float(x['start'])*30) for x in selections]
+    if any(length<=0 for length in lengths):
+        return result  # Geometry repair must run before selecting a subset.
+    for part in range(1, stats['count']+1):
+        indices = [i for i,x in enumerate(selections) if x.get('part')==part]
+        hook = round(stats['hook']*30) if part==1 else 0
+        if hook+sum(lengths[i] for i in indices)<=maximum:
+            continue
+        from .source_speech import active, anchor
+        reserved = anchor(project) if active(project) else None
+        optional = [i for i in indices if selections[i].get('section')=='development'
+                    and not (reserved and selections[i]['start'] <= reserved['start'] and selections[i]['end'] >= reserved['end'])
+                    and i not in (0,len(selections)-1)]
+        mandatory = [i for i in indices if i not in optional]
+        fixed = hook+sum(lengths[i] for i in mandatory)
+        capacity = maximum-fixed
+        if capacity<0:
+            return result
+        # Tick total -> (priority-weighted footage, selected scene bit mask).
+        states={0:(0.0,0)}
+        for i in optional:
+            for length,(score,mask) in list(states.items()):
+                new_length=length+lengths[i]
+                if new_length>capacity:
+                    continue
+                value=(score+float(selections[i].get('priority',.5))*lengths[i],mask|(1<<i))
+                if new_length not in states or value[0]>states[new_length][0]:
+                    states[new_length]=value
+            if len(states)>100000:
+                return result  # Bound computational cost for huge inputs.
+        candidates=[(length,score,mask) for length,(score,mask) in states.items()
+                    if minimum<=fixed+length<=maximum and (mask or not optional)]
+        if not candidates:
+            return result
+        _,_,mask=max(candidates,key=lambda x:(x[1],x[0]))
+        chosen.difference_update(i for i in optional if not mask&(1<<i))
+    if not any(selections[i].get('section')=='development' for i in chosen):
         return result
-    candidates = [
-        (index, item) for index, item in enumerate(selections)
-        if item.get('section') == 'development'
-        and index not in (0, len(selections) - 1)
-    ]
-    # Remove lowest-priority optional footage first, preferring a longer clip
-    # when priorities tie so one operation can resolve a modest overrun.
-    candidates.sort(key=lambda pair: (float(pair[1].get('priority', .5)),
-                                      -(float(pair[1]['end']) - float(pair[1]['start']))))
-    kept = list(selections)
-    for _, item in candidates:
-        if total(kept) <= target + .05:
-            break
-        if sum(1 for x in kept if x.get('section') == 'development') <= 1:
-            break
-        kept.remove(item)
-    return {**result, 'selections': kept}
+    kept=[x for i,x in enumerate(selections) if i in chosen]
+    return {**result,'selections':kept}
 
 
 def duration_planning_instructions(project, rate=None):
@@ -174,13 +248,14 @@ def duration_planning_instructions(project, rate=None):
     ]
     if rate is not None:
         ratio = project['settings'].get('original_dialogue_ratio', .15) if project['metadata'].get('has_audio', True) else 0
-        voiced_min = stats['minimum'] * (1 - min(.2, ratio + .025))
+        voiced_min = stats['minimum'] * (1 - ratio)
         voiced_target = target * (1 - ratio)
         lines.extend([
             f'Budget approximately {voiced_target:.1f}s of narrated moving footage per part at {rate:.2f} words/syllables per second.',
             f'That is roughly {round(voiced_target * rate)} words/syllables per part, distributed across clips; not one short sentence per story stage.',
             f'At most 25s per narrated clip means at least {math.ceil(voiced_min / 25)} narrated clips per part to reach even the minimum; aim for {math.ceil(voiced_target / 20)} narrated clips near 20s, plus evidenced original-dialogue clips.',
             'Select enough distinct footage first, then write narration to fit each selected clip. Do not pad silence, repeat footage or facts, or invent events to meet the budget.',
+            'The original-dialogue percentage is a ceiling: if less suitable real speech is available, increase the narrated footage accordingly.',
         ])
     return '\n'.join(lines)
 
@@ -215,8 +290,11 @@ def plan_fingerprint(project):
     controls belonging to an inactive output mode."""
     from .providers import digest
     s = project['settings']
+    workflow = s.get('production_workflow', 'legacy')
     names = ['output_mode', 'language', 'draft_rule', 'review_rule',
              'summary_rule', 'voice_speed', 'hook_enabled']
+    if workflow == 'plan_first':
+        names += ['production_workflow', 'duration_min_ratio']
     names += ['summary_seconds'] if s.get('output_mode') == 'single' else ['part_count', 'part_seconds']
     if storytelling(s):
         names += ['narration_style', 'original_dialogue_ratio']
@@ -229,6 +307,9 @@ def plan_fingerprint(project):
                'duration': project['metadata'].get('duration'),
                'settings': {k: s.get(k) for k in names},
                'transcript': [{k: c[k] for k in ('start', 'end', 'text')} for c in transcript]}
+    if workflow == 'plan_first':
+        payload['evidence'] = project.get('scenes', [])
+        payload['summary'] = project.get('summary', '')
     def normalize(value):
         if isinstance(value, float) and value.is_integer():
             return int(value)
@@ -274,7 +355,7 @@ def validate_plan(result, project, *, check_text=True):
         raise ValueError('Cần một mở đầu, các diễn biến, một kết thúc cho toàn câu chuyện.')
     if any(x['section'] != 'development' for x in selected[1:-1]):
         raise ValueError('Các chặng giữa phải là diễn biến.')
-    if not any(x['narration'].strip() for x in selected[1:-1]):
+    if not source_led(project) and not any(x['narration'].strip() for x in selected[1:-1]):
         raise ValueError('Phần diễn biến cần ít nhất một lời AI tóm tắt chặng chính.')
     stats = duration_budget_stats(result, project)
     # Recompute selected durations below after timestamp validation. The
@@ -292,9 +373,9 @@ def validate_plan(result, project, *, check_text=True):
         previous_end, previous_part = b, item['part']
         item.update(start=a,end=b,id=f'sel{i}')
         totals[item['part']] += b-a
-        if i==0 and (not item['narration'].strip() or (not storytelling(settings) and item['narration_offset'] < settings.get('opening_delay',3))):
+        if i==0 and not source_led(project) and (not item['narration'].strip() or (not storytelling(settings) and item['narration_offset'] < settings.get('opening_delay',3))):
             raise ValueError('Mở đầu phải có lời AI sau hook và đoạn hình gốc theo độ trễ đã chọn.')
-        if i==len(selected)-1 and not item['narration'].strip():
+        if i==len(selected)-1 and not source_led(project) and not item['narration'].strip():
             raise ValueError('Kết thúc phải có lời AI về kết quả và bài học.')
         if item['narration'].strip() and not storytelling(settings):
             # Conservative estimate; real WAV duration is checked again before rendering.
@@ -323,15 +404,31 @@ def can_resume_story(project):
     """
     # Legacy plans do not carry an evidence manifest/model binding, so they
     # must be re-analyzed once instead of being silently reused after retries.
+    from .source_policy import VERSION
+    if project.get('source_policy_version') != VERSION:
+        return False
     if not project.get('evidence_manifest') or not plan_is_current(project):
         return False
     if project.get('script_language') != project['settings']['language']:
         return False
     try:
+        if project['settings'].get('production_workflow') == 'plan_first':
+            from .story_bridges import VERSION as BRIDGE_VERSION
+            if project['settings'].get('original_dialogue_ratio',.15)>.5 and project.get('story_bridge_version')!=BRIDGE_VERSION:
+                return False
+            from .retention import VERSION as RETENTION_VERSION
+            if project.get('retention_policy_version')!=RETENTION_VERSION:
+                return False
+            from .hook_policy import VERSION as HOOK_VERSION
+            if project.get('hook_policy_version') != HOOK_VERSION:
+                return False
+            from .plan_first import contract_check
+            contract_check(project)
         validated = validate_plan(project['story_plan'], project, check_text=False)
         narrations = project.get('narrations', [])
         by_segment = {n.get('segment_id'): n for n in narrations if n.get('enabled') and n.get('text', '').strip()}
-        for item in validated['selections']:
+        from .hook_policy import slots
+        for item in slots(validated):
             if not item['narration'].strip():
                 continue
             narration = by_segment.get(item['id'])
@@ -343,6 +440,11 @@ def can_resume_story(project):
 
 
 def plan_story(project, report, check):
+    from .source_policy import RULE, VERSION
+    from .narration_text import clean_narration
+    if project['settings'].get('production_workflow') == 'plan_first' and storytelling(project['settings']):
+        from .plan_first import plan_first
+        return plan_first(project, report, check)
     from . import store
     from .providers import ask_ai
     settings = project['settings']
@@ -360,7 +462,7 @@ Create {'ONE concise highlight video' if count==1 else str(count)+' chronologica
 Read ALL scenes and dialogue below. Cover the whole story and its actual resolution, not only its beginning. For compilations, distinguish separate people/incidents and summarize the outcomes without merging them into one event.
 Select compelling, fast-paced action, tension, drama, arguments or raised voices WHEN supported by the evidence. Preserve essential context, transitions, decisive original dialogue, and the resolution. Do not fabricate conflict or turn allegations into established facts. Quiet but essential outcomes take priority over an extra dramatic clip.
 Structure across ALL parts: exactly one opening selection first, one or more development selections, exactly one ending selection last. Parts are 1..{count}, all nonempty. Source start/end are absolute seconds, ordered chronologically, non-overlapping (hook alone may repeat a highlight). Keep source playback moving, mute original sound only while AI narrates.
-Hook: the best evidenced 3-7 second moment from anywhere in the complete source, with no AI narration over it. It precedes the opening selection and consumes part 1's time budget.
+Hook: the best evidenced 3-7 second moment from anywhere in the complete source. Prefer actual conflict, urgent exchange or spontaneous reaction with original on-scene sound: original_audio=true, narration empty. If no suitable real-audio moment exists, original_audio=false and narration is one concise, duration-bounded sentence introducing the whole story's situation and central conflict. It precedes the opening selection and consumes part 1's time budget.
 Opening: establish the overall situation and central question of the entire video. Start narration at least {settings.get('opening_delay',3):g} seconds into the opening selection, AFTER the hook and a short original-video passage.
 Development: summarize each significant stage with context and causal links, not a literal description of every frame. Short, useful commentary between retained original lines. At least one development selection MUST have narration. Use empty narration for important original exchanges so they remain audible.
 Ending: spoken narration must state the evidenced outcome and a measured lesson grounded in this story. Explicitly acknowledge unknown outcomes. The lesson must not invent facts or blame. outcome and lesson fields are editorial notes AND must be reflected in the final spoken narration.
@@ -375,7 +477,7 @@ ALL SOURCE DIALOGUE: {json.dumps(transcript,ensure_ascii=False,separators=(',', 
     if storytelling(settings):
         rate = speech_rate(project)
         target = settings.get('original_dialogue_ratio', .15)
-        lower, upper = max(.1, target-.025), min(.2, target+.025)
+        lower, upper = max(.1, target-.025), min(.5, target+.025)
         prompt = prompt.replace('Keep source playback moving, mute original sound only while AI narrates.',
                                 'Keep source playback moving. Original sound stays quietly underneath every narrated selection, including pauses, at the user-selected background volume.')
         start, end = prompt.index('Opening:'), prompt.index('Ending:')
@@ -383,19 +485,23 @@ ALL SOURCE DIALOGUE: {json.dumps(transcript,ensure_ascii=False,separators=(',', 
 Opening: narration begins immediately after the hook. Narration offset is 0 for every selection; ignore the legacy opening delay.
 Development: most selections MUST have substantial narration. Explain all significant actions and context in chronological order, without repetitive filler. The viewer must understand the whole situation through the narrator alone.
 Keep ORIGINAL DIALOGUE only for decisive lines, admissions, questions or reactions that add evidence. Use separate selections with EMPTY narration, offset 0, and evidence quoting the retained line. Cut at sentence boundaries. Hook is also original audio.
-Original-audio selections INCLUDING hook must occupy {lower:.1%}–{upper:.1%} of ACTUAL output duration, aiming for {target:.0%}. The remainder uses the shared AI narrator. Do not leave silent scenes outside this budget.
+Do NOT retain source voice-over, presenter narration, commentary, promotional lines, or AI narration as ORIGINAL DIALOGUE. Select real exchanges between people, spontaneous reactions, conflict/drama or actions supported by footage. Do not copy the source narrator's wording into the new narrator; write original, evidence-grounded narration. Treat source commentary as secondary context only and do not present unverified commentary as fact.
+Original-audio selections INCLUDING hook must occupy AT MOST {target:.0%} of ACTUAL output duration. There is no minimum quota: retain only available important real dialogue. The remainder uses the shared AI narrator.
 Each narrated selection is 4–25 seconds of moving footage, at roughly {rate:.2f} words/syllables per second (allowed 80–120% of this rate). A 10-second scene needs {round(8*rate)}–{round(12*rate)} words/syllables. A short comment over a long scene is INVALID. Split longer stages into several selections. TTS is generated to the scene duration; never pad, repeat, or speed up footage.
 ''' + prompt[end:]
         prompt = re.sub(r'Keep every spoken sentence short enough.*?No voice crosses a part boundary\.',
                         'Follow the per-selection word budgets above. No voice crosses a part boundary.', prompt)
         prompt += '\nThese coverage rules override sparse-commentary style preferences. If evidence is limited, select less footage instead of inventing filler.'
     prompt += '\n' + duration_planning_instructions(project, rate)
+    prompt += '\n' + RULE
     report(88,'AI chọn highlight và viết mở đầu, diễn biến, kết thúc từ toàn bộ nguồn…')
     error = ''
     for attempt in range(3):
         check()
         try:
             result = ask_ai(prompt + error, [], settings, store.project_dir(project['id']), check, StoryAnswer)
+            for item in result['selections']:
+                item['narration']=clean_narration(item['narration'])
         except ValidationError as exc:
             if attempt == 2:
                 raise
@@ -424,6 +530,8 @@ Each narrated selection is 4–25 seconds of moving footage, at roughly {rate:.2
                         # cannot jointly satisfy arithmetic and long narration.
                         # Fix timing in code and ask only for bounded prose.
                         from .story_schedule import write_scheduled
+                        from .scene_repair import repair
+                        fitted = repair(fitted, project, ask_ai, store.project_dir(project['id']), report, check)
                         result = write_scheduled(fitted, project, ask_ai, store.project_dir(project['id']), report, check)
                         break
                 raise
@@ -435,10 +543,12 @@ Each narrated selection is 4–25 seconds of moving footage, at roughly {rate:.2
     hook = result['hook']
     settings.update(hook_enabled=True,hook_start=hook['start'],hook_end=hook['end'],title=result['title'],narration_mode='overlay',part_durations=[])
     project['hooks'] = [hook] + [h for h in project.get('hooks',[]) if h != hook]
+    from .hook_policy import slots
     project['narrations'] = [dict(id='story-'+x['id'],start=x['start']+x['narration_offset'],text=x['narration'].strip(),
         section=x['section'],segment_id=x['id'],part=x['part'],evidence=x['evidence'],enabled=True,
         target_duration=round(x['end']-x['start']-.04,3) if storytelling(settings) else 0,
-        audio='',audio_hash='',duration=0,cues=[],caption_version=0) for x in result['selections'] if x['narration'].strip()]
-    project.update(story_plan=result,plan_fingerprint=plan_fingerprint(project),script_language=settings['language'],
+        audio='',audio_hash='',duration=0,cues=[],caption_version=0) for x in slots(result) if x['narration'].strip()]
+    project.update(story_plan=result, duration_plan=duration_plan_manifest(result, project),source_policy_version=VERSION,
+                   plan_fingerprint=plan_fingerprint(project),script_language=settings['language'],
                    title_language=settings['language'],exports=[],preview_exports=[])
     return project

@@ -155,13 +155,17 @@ def build_story(project, strict=False):
     import copy
     from .story import storytelling, validate_narration_budget
     settings = project['settings']
+    if strict:
+        from .plan_first import contract_check
+        contract_check(project)
     plan = project['story_plan']
     narrated = storytelling(settings)
     if strict and narrated:
         # The actual WAV lengths are checked below. A newly created/shared
         # speaker must not retroactively change the script's word budget.
         validate_narration_budget(plan, project, check_text=False)
-        expected = {x['id'] for x in plan['selections'] if x['narration'].strip()}
+        from .hook_policy import slots
+        expected = {x['id'] for x in slots(plan) if x['narration'].strip()}
         present = {n.get('segment_id') for n in project['narrations'] if n['enabled'] and n['text'].strip()}
         if not expected <= present:
             raise ValueError('Thiếu lời kể cho cảnh AI. Tạo lại kịch bản để giữ tỷ lệ lời kể và thoại gốc.')
@@ -174,17 +178,27 @@ def build_story(project, strict=False):
                  part=part,segment_id=identifier,section=section)
         clips.append(c)
         cursor=c['end']
-    append('hook',settings['hook_start'],settings['hook_end'],1)
+    append('hook',settings['hook_start'],settings['hook_end'],1,'hook','hook')
     for item in plan['selections']:
         append('highlight',item['start'],item['end'],item['part'],item['id'],item['section'])
     for index in sorted(set(c['part'] for c in clips)):
         group=[c for c in clips if c['part']==index]
         parts.append(dict(index=index,start=group[0]['start'],end=group[-1]['end'],duration=frame(group[-1]['end']-group[0]['start'])))
     original_audio = []
+    source_mutes = []
+    from .source_speech import active, muted_ranges
+    excluded = muted_ranges(project) if narrated and active(project) else []
     selections = {x['id']: x for x in plan['selections']}
     for clip in clips:
+        for left,right in excluded:
+            a,b = max(left,clip['source_start']),min(right,clip['source_end'])
+            if b>a:
+                offset=clip['start']-clip['source_start']
+                source_mutes.append({'start':a+offset,'end':b+offset})
+        if narrated and clip['kind']=='hook' and not plan['hook'].get('original_audio',True):
+            source_mutes.append({'start':clip['start'],'end':clip['end']})
         if narrated:
-            keep = clip['kind']=='hook' or not selections[clip['segment_id']]['narration'].strip()
+            keep = plan['hook'].get('original_audio',True) if clip['kind']=='hook' else not selections[clip['segment_id']]['narration'].strip()
             if not keep:
                 continue
             if project['metadata'].get('has_audio'):
@@ -196,7 +210,7 @@ def build_story(project, strict=False):
                 mapped_cues.append({**cue,'start':a+offset,'end':b+offset,'words':shifted_words(cue,offset)})
     for n in project['narrations']:
         if not n['enabled'] or not n['text'].strip(): continue
-        candidates=[c for c in clips if c['kind']!='hook' and c['source_start']<=n['start']<c['source_end']]
+        candidates=[c for c in clips if (c['kind']!='hook' or n.get('segment_id')=='hook') and c['source_start']<=n['start']<c['source_end']]
         if n.get('segment_id'):
             candidates=[c for c in candidates if c['segment_id']==n['segment_id']]
         if not candidates:
@@ -225,7 +239,12 @@ def build_story(project, strict=False):
         original_ratio = sum(x['end']-x['start'] for x in original_audio)/cursor
         ai_ratio = sum(v['end']-v['start'] for v in result['voices'])/cursor
         result.update(original_audio=original_audio, narration_mix={'original_ratio': original_ratio, 'ai_ratio': ai_ratio})
-        if strict and ai_ratio < .78:
+        result['source_mutes'] = source_mutes
+        from .retention import budget as retention_budget
+        result['retention']=retention_budget(plan,project)
+        planned_ai_ratio = sum(c['end']-c['start'] for c in clips
+                               if (bool(plan['hook'].get('narration')) if c['kind']=='hook' else bool(selections[c['segment_id']]['narration'].strip())))/cursor
+        if strict and ai_ratio < planned_ai_ratio-.02:
             raise ValueError(f'Lời AI mới phủ {ai_ratio:.0%} video. Cần tạo đủ lời kể theo thời lượng cảnh trước khi xuất.')
     result['warnings']=list(dict.fromkeys(warnings+[w for w in result['warnings'] if not w.startswith('Ranh giới phần')]))
     for part in parts[:-1]:

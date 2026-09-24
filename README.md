@@ -1,6 +1,6 @@
 # AIR3view Studio
 
-Ứng dụng chạy trên máy để biến video YouTube hoặc file local thành video review dọc **1080 × 1920, 30 fps**. Backend Python/FastAPI, giao diện React/TypeScript, dựng bằng FFmpeg; AI phân tích qua Codex CLI hoặc OpenAI API, giọng đọc qua OmniVoice riêng.
+Ứng dụng chạy trên máy để biến video YouTube hoặc file local thành video review dọc **1080 × 1920, 30 fps**. Backend Python/FastAPI, giao diện React/TypeScript, dựng bằng FFmpeg; AI phân tích qua Codex CLI hoặc OpenAI API, giọng đọc qua VieNeu-TTS local (mặc định) hoặc OmniVoice riêng.
 
 ## Tính năng
 
@@ -77,9 +77,9 @@ npm.cmd --prefix frontend run build
 
 **Script này không cài OmniVoice, FFmpeg hoặc đăng nhập AI.** Tiếp tục bước 3 và 4. Nếu dùng đường dẫn FFmpeg riêng, đặt `$env:FFMPEG_PATH` trước khi chạy setup/server.
 
-## 3. Cài và chạy OmniVoice riêng
+## 3. Cài và chạy VieNeu-TTS hoặc OmniVoice riêng
 
-AIR3view không đóng gói model OmniVoice. Dùng môi trường Python riêng để tránh xung đột PyTorch/Gradio với backend. Hướng dẫn gốc: [OmniVoice](https://github.com/k2-fsa/OmniVoice).
+AIR3view không đóng gói model VieNeu-TTS hoặc OmniVoice. Dùng môi trường Python riêng để tránh xung đột PyTorch/Gradio với backend. Hướng dẫn gốc: [OmniVoice](https://github.com/k2-fsa/OmniVoice).
 
 Mở PowerShell thứ hai:
 
@@ -229,10 +229,82 @@ Tiêu đề câu chuyện, bật/tắt và mốc hook, cùng danh sách mốc ch
 
 Đổi chế độ, số phần, thời lượng, ngôn ngữ, hook hoặc quy tắc sẽ yêu cầu phân tích lại trước khi xuất/tạo giọng cho bản chọn cảnh mới. Dự án cũ vẫn xem được; chọn chế độ ở tab Đầu ra trước khi chạy mới. Phân tích lại thay lời dẫn hiện tại, nên sao lưu nếu cần giữ bản cũ.
 
+### Dịch vụ giọng đọc
+
+Trong **Kết nối**, AIR3view mặc định dùng **VieNeu-TTS** tại `http://localhost:7860`. VieNeu Studio cần được khởi động và nạp model trước khi bấm **Tạo giọng VieNeu**. Với VieNeu, chọn tên giọng có sẵn trong VieNeu hoặc dùng **Dùng giọng tham chiếu** và tải audio mẫu; Giọng có sẵn dùng endpoint `/wrapper`; giọng tham chiếu dùng `/wrapper_1` cùng audio mẫu và phần chép lời. Hai endpoint gắn chế độ riêng trên VieNeu; chỉ gửi audio vào `/wrapper` không chuyển sang chế độ clone.
+
+**OmniVoice** tại `http://127.0.0.1:8001` vẫn là lựa chọn phụ. Chuyển dịch vụ sẽ tạo lại audio theo fingerprint mới, còn video, kịch bản và phụ đề được giữ lại. Cổng và URL chỉ được phép là HTTP localhost để tránh gửi audio giọng ra ngoài máy.
+
+Nếu VieNeu báo `None` hoặc **Vui lòng tải model trước**, dịch vụ vẫn đang chạy nhưng chưa nạp model. Mở VieNeu Studio, chọn backbone/codec/device và bấm **Load model**, chờ trạng thái sẵn sàng rồi bấm tạo giọng lại. AIR3view kiểm tra trạng thái trước khi bắt đầu tạo giọng và báo hướng dẫn này thay vì lưu audio rỗng.
+
+### Lời kể không đọc mốc dẫn chứng
+
+AI kể lại cùng sự kiện bằng cách dẫn chuyện mới, không đổi nhân vật, trình tự, hành động, kết quả hoặc mức độ chắc chắn; không bịa thêm động cơ hay lời thoại. Mốc nguồn chỉ nằm trong `start/end/evidence`, không được đọc hoặc đưa vào phụ đề AI. Ví dụ `At 138 seconds, Martina calls...` thành `Martina calls...`. Ngày giờ và thời lượng thực của sự kiện vẫn được giữ khi cần thiết.
+
+Rule áp dụng cả khi viết kịch bản, dịch ngôn ngữ và sửa lời theo thời lượng. Các tiền tố dẫn chứng rõ ràng được loại trước TTS. Nếu lời cũ có mốc nguồn, audio/phụ đề của riêng đoạn đó bị đánh dấu cần tạo lại, để âm thanh và chữ luôn thống nhất; không chỉ giấu chữ trong khi giọng vẫn đọc mốc. Transcript thoại gốc và bằng chứng không bị xóa. File MP4 đã xuất vẫn giữ nguyên cho đến khi dựng lại.
+
+### Render nhanh trên NVIDIA
+
+Bản dựng dùng cache hình theo biên cảnh (mục tiêu khoảng 45 giây/đoạn), cache âm thanh riêng và ghép MP4 cuối bằng cách chép lại luồng hình đã mã hóa. Khi chỉ chỉnh âm lượng, ứng dụng chỉ trộn lại tiếng và đóng gói MP4; khi sửa phụ đề, chỉ đoạn hình bị ảnh hưởng cần dựng lại. Audio được trộn liên tục và mã hóa AAC một lần để tránh khe tiếng giữa các đoạn cache.
+
+Tiến độ dựng hiển thị thời lượng đã xử lý, tốc độ và ETA theo dữ liệu FFmpeg. Renderer tự dùng tối đa hai luồng NVENC khi có đủ lõi CPU và dung lượng GPU trống; nếu lỗi tài nguyên, giảm về một luồng trước khi Auto chuyển sang CPU. Giữ cùng encoder cho mọi đoạn trong một phần.
+
+**Dựng thử 15s** xuất tối đa 15 giây từ vị trí đầu phát hiện tại, giới hạn trong phần đang xem, ở 360×640. Các hiệu ứng xử lý trực tiếp tại độ phân giải này; video xuất đầy đủ vẫn là 1080×1920. Cache nằm trong `data/<project-id>/render-cache/`, dùng thêm dung lượng ổ đĩa và được xóa cùng dự án. Không cần xóa cache khi đổi cấu hình: nội dung thay đổi sẽ có chữ ký riêng.
+
+Trong **Bố cục → Bộ mã hóa xuất**, mặc định **Tự động** thử một lần encode NVENC thật để kiểm tra GPU/driver, không chỉ kiểm tra danh sách encoder của FFmpeg. Nếu dùng được, xuất H.264 NVENC preset p4/CQ26. Nếu không, dùng CPU libx264 veryfast/CRF20. Lỗi khởi tạo thiết bị NVENC trong chế độ Tự động cũng có thể chạy lại bằng CPU; lỗi dữ liệu, hủy và lỗi filter không bị che bằng fallback. Chọn NVIDIA NVENC thủ công sẽ báo lỗi nếu thiết bị không dùng được.
+
+Renderer dùng tối đa 4 luồng filter và 8 luồng CPU encode, vẫn giữ nguyên cắt cảnh, voice, phụ đề và kiểm tra thời lượng. Không gộp cảnh tự động vì benchmark gộp input trên nguồn VP9 cho thấy sai khác frame ở điểm nối cần xử lý riêng. NVENC tăng tốc bước encode/render, không tăng tốc AI, VieNeu hoặc ASR. `scripts/benchmark_render.py` tạo bản đo riêng trong `data/<project>/diagnostics`, không cập nhật bản xuất dự án.
+
+### Xóa dự án và file
+
+Ở màn hình **Dự án của bạn**, bấm biểu tượng thùng rác trên thẻ dự án, kiểm tra tên và xác nhận **Xóa dự án và file**. Đây là xóa vĩnh viễn bản sao nguồn, proxy, audio giọng, cache, phụ đề và các bản xuất trong `data/<project_id>`, cùng thông tin dự án/lịch sử job. File gốc ngoài thư mục dự án, bản MP4 đã tải về, cài đặt/API key và giọng mẫu dùng chung được giữ.
+
+Dự án đang chạy hoặc đang xếp hàng không thể xóa. Nếu dữ liệu thay đổi sau khi mở xác nhận, mở lại hộp thoại để xác nhận bản mới nhất. Nếu Windows đang giữ file, ứng dụng báo chưa xóa hết và giữ bản ghi dự án để thử lại. Thư mục chứa symlink/junction bị từ chối để tránh xóa ra ngoài phạm vi dự án.
+
+### Canh từng từ thoại gốc nhanh
+
+Bước căn thoại gốc chỉ lấy cue thực sự hiển thị trong bản dựng, ánh xạ về thời gian nguồn và gộp khoảng trùng (kể cả hook lặp). Cảnh lời AI, thoại không được chọn hoặc âm nguồn tắt không cần nhận dạng lại. Ưu tiên mốc từ hợp lệ hiện có, mốc trong transcript nguồn và cache nhận dạng toàn nguồn đã lưu trước đó.
+
+Nếu vẫn thiếu, cắt những khoảng câu cần dùng với 0,25 giây ngữ cảnh và nhận dạng từng đoạn tối đa 30 giây. Kết quả từng câu được lưu theo audio, model ASR, mốc và text; câu không khớp cũng lưu kết quả phụ đề thường để không nhận dạng lại vô ích mỗi lần xuất. Sửa text/mốc, thay audio hoặc ASR model sẽ dùng cache tương ứng. Phụ đề dịch khác text nguồn giữ theo câu, không ép mốc từ ngôn ngữ nguồn. Bước chạy hiển thị số đoạn và số giây audio đã xử lý; `source_caption_stats` ghi số lượt ASR và số giây nhận dạng thực tế. Phụ đề AI và giọng không bị tạo lại vì thay đổi này.
+
 ### Phụ đề và âm thanh
 
+**Cập nhật tỷ lệ trên 50%:** 60–100% được dùng làm mục tiêu thời lượng tiếng gốc, với sai số tối đa 3 điểm phần trăm phía dưới. AI phải chọn đủ cảnh thoại thật trước khi viết phần lời kể còn lại; nếu kế hoạch lệch, chọn lại cảnh trước TTS. Nếu toàn nguồn không đủ tiếng thật, báo rõ lượng thiếu và tỷ lệ thực tế. Mốc chồng lấn của phụ đề tự động YouTube được xử lý như dòng hiển thị cuộn, không dùng để loại nhầm toàn bộ hội thoại. Xem `ORIGINAL_AUDIO_TARGET_FIX.vi.md`.
+
+Thanh **Thoại gốc quan trọng tối đa** cho phép 10–100%. Trên 50%, workflow plan-first ưu tiên giữ các cuộc hội thoại, xung đột và phản ứng thật đã được xác nhận, kể cả ở phần mở đầu/kết thúc; lời AI chỉ bổ sung phần cần thiết. Ở 100%, nếu tiếng gốc đã kể đủ câu chuyện và có hook phù hợp, bản dựng có thể không cần tạo voice AI. Đây vẫn là mức tối đa: không giữ lời bình/AI của nguồn hoặc ép thêm thoại không phù hợp để đủ tỷ lệ. Đổi tỷ lệ rồi chạy phân tích/Chạy toàn bộ để lập lại kịch bản.
+
+Phụ đề trên bản dựng tuân theo âm thanh đang phát: đoạn có lời AI chỉ hiển thị phụ đề AI; phụ đề thoại gốc chỉ được đưa vào đoạn hook hoặc đoạn giữ tiếng gốc không có lời AI và chỉ khi nguồn có thoại. Mốc từ nguồn được dùng lại từ bản nhận dạng đã lưu; nếu mọi câu đã có mốc tin cậy, bước canh phụ đề không gọi ASR nguồn lần nữa. Mốc từ AI chỉ nhận dạng khi audio mới hoặc chưa có `caption_version` hợp lệ.
+
+### Lỗi “Mở đầu và kết thúc phải dành cho lời kể”
+
+Đây là lỗi phân vai âm thanh, không phải thiếu credit hay thiếu thời lượng nguồn. `keep_original=true` nghĩa là phát thoại gốc và không có lời AI. Bộ chọn cảnh phiên bản mới nói rõ ý nghĩa này; trước khi khóa lịch, hệ thống dành cảnh mở đầu và kết thúc cho lời AI. Nếu tỷ lệ thoại gốc chưa hợp lệ, hệ thống chọn lại các câu nguồn hoàn chỉnh bên trong chính những cảnh đã chọn, không đổi tổng thời lượng hoặc kéo dài hình. Các lựa chọn thoại gốc đã hợp lệ được giữ. Sau đó vẫn kiểm tra tỷ lệ, mốc, thời lượng từng phần và ngôn ngữ trước TTS.
+
+Tăng thời lượng mục tiêu không sửa được lỗi phân vai: mục tiêu cao hơn còn làm tăng mức thời lượng tối thiểu cần đạt. Thông báo thời lượng hiện nêu số giây thực, khoảng yêu cầu và lượng thiếu/vượt. Nếu không đủ lời thoại hoặc nội dung phù hợp, cần chọn lại cảnh hoặc điều chỉnh mục tiêu, không tạo im lặng để lấp chỗ.
+
+### Rút gọn cảnh theo cả hai giới hạn thời lượng
+
+Khi AI chọn quá nhiều cảnh, hệ thống tìm tổ hợp các cảnh diễn biến nguyên vẹn theo mốc 30fps để tổng mỗi phần nằm giữa mức tối thiểu và tối đa. Giữ mở đầu/kết thúc, thứ tự nguồn và ưu tiên nội dung có điểm quan trọng cao. Không tiếp tục bỏ nguyên cảnh nếu thao tác đó làm bản dựng ngắn hơn mức tối thiểu; khi không có tổ hợp cảnh phù hợp, giữ bản gốc để yêu cầu AI lập lại kế hoạch. Không tự hạ mức tối thiểu người dùng hoặc thêm hình lặp.
+
+### Nhập thời lượng liên kết hai chiều
+
+Trong Đầu ra, thời lượng mục tiêu và Mức tối thiểu được gom cùng một nhóm. Đổi số phút mục tiêu giữ nguyên tỷ lệ tối thiểu và tự tính số phút tối thiểu; đổi tỷ lệ cập nhật số phút ngay. Nhập trực tiếp **Thời lượng tối thiểu (phút)** sẽ tính ngược tỷ lệ, trong khoảng 60–100%. Ví dụ mục tiêu 5 phút và tối thiểu 4 phút tương đương 80%; đổi mục tiêu sang 3 phút giữ 80% và tối thiểu thành 2,4 phút.
+
+Khoảng `mm:ss–mm:ss` dùng cùng công thức backend, tính cả hook. Khi nguồn ngắn hơn mục tiêu hoặc chia nhiều phần, mức tối thiểu tính theo nguồn khả dụng mỗi phần và có giải thích trên UI. Mục tiêu 0 vẫn là chế độ lấy thời lượng nguồn, không đổi thành một giá trị cố định khi lưu. Các ô vẫn cho xóa trắng trong lúc nhập; rời ô trống giữ giá trị trước đó. Đây là khoảng người dùng yêu cầu, không phải dự đoán kịch bản AI chắc chắn sẽ đạt; thay đổi yêu cầu cần phân tích lại.
+
+### Workflow plan-first / duration-first
+
+Dự án mới dùng **Lập kế hoạch trước · ưu tiên duration**. Dự án cũ giữ **Tương thích bản cũ** và bản xuất đã có. Trong **Đầu ra**, chọn workflow mới để áp dụng cho dự án cũ rồi chạy **AI phân tích & biên kịch**; thao tác này lập lại kịch bản.
+
+Luồng mới: hiểu nguồn → chọn cảnh và thoại gốc (chưa viết lời) → kiểm tra từng phần → lưu lịch khóa → viết lời theo lịch → tạo giọng → kiểm định → FFmpeg xuất video. Không thêm Remotion. Mặc định mỗi phần đạt 90–100% thời lượng yêu cầu (10 phút tương ứng 9–10 phút), có thể chỉnh mức tối thiểu; nhập 0 lấy thời lượng nguồn. Nếu nguồn không đủ, mức tối thiểu được giới hạn theo lượng nguồn khả dụng.
+
+`duration_plan` có trạng thái `planned` rồi `ready`, fingerprint đầu vào, lịch hình và các slot. Lịch được lưu trước khi viết lời để retry phần lời có thể dùng lại lịch. TTS/render kiểm tra manifest ready, hình học, mốc và thời lượng narration; không cho bỏ qua manifest của dự án mới. Các đoạn thoại gốc đã chọn được giữ nguyên, không tự chọn lại ở bước viết lời. Hỗ trợ một video hoặc nhiều phần.
+
+Với workflow mới, nhịp audio chỉ được căn thêm ±5% quanh tốc độ đã chọn. VieNeu áp tốc độ qua FFmpeg vì API không có tham số speed; OmniVoice nhận speed trực tiếp. Audio ngoài ngưỡng đi vào vòng sửa câu, không kéo giọng 0,5–1,5× như đường legacy. VieNeu dùng temperature 0,4 thống nhất để giảm biến thiên; giọng mẫu/preset không thay đổi giữa các đoạn. Điều này không bảo đảm cảm xúc giống hệt nhau: vẫn cần nghe duyệt đoạn mẫu và bản cuối.
+
+Lịch khóa và tỷ lệ tối thiểu thuộc từng dự án, không bị cấu hình chung của dự án khác đổi tự động. Cache của nhịp mới tách khỏi audio kéo giãn cũ. Audio/phụ đề không đổi được dùng lại khi tiếp tục, không nhận dạng lại toàn bộ lời AI.
+
 - Tab **Giọng** dùng một giọng kể chung cho toàn bộ video và các phần. Chế độ **Tạo một giọng chung** tạo mẫu một lần rồi dùng mẫu đó cho mọi lời dẫn; mẫu được lưu trong dự án và giữ nguyên khi sửa lời hoặc tốc độ đọc. Có thể nghe mẫu trước khi xuất. Chế độ tham chiếu dùng chung audio bạn tải lên.
-- **AI kể xuyên suốt** là mặc định cho dự án mới: kể bối cảnh, các chặng diễn biến và kết quả có bằng chứng, giữ 10–20% thời lượng cho thoại gốc quan trọng (mặc định 15%, tính cả hook). Đây là tỷ lệ đoạn ưu tiên thoại gốc ở âm lượng đầy đủ, không phải số từ. Các cảnh lời AI giữ tiếng nguồn nhỏ dưới nền cả khi ngắt câu, đồng thời chỉ hiện phụ đề lời kể. Thanh **Tiếng gốc dưới nền lời AI** chỉnh từ 0–100% so với âm lượng gốc, mặc định 15%; chọn 0% để tắt. Bấm **Lưu âm lượng & dựng lại** để cập nhật MP4. Chỉ đổi âm lượng sẽ dùng lại audio; nếu đổi giọng mẫu, lời đọc hoặc cấu hình tổng hợp giọng, ứng dụng tự tạo lại các đoạn cần thiết trước khi xuất, không viết lại kịch bản. Dự án cũ chọn chế độ này trong tab **Giọng**, rồi bấm **Viết lại lời kể & tạo video** để phân tích và dựng lại. Giọng kể chung vẫn được giữ.
+- **AI kể xuyên suốt** là mặc định cho dự án mới: kể bối cảnh, các chặng diễn biến và kết quả có bằng chứng, giữ 10–50% thời lượng cho thoại gốc quan trọng (mặc định 15%, tính cả hook). Đây là tỷ lệ đoạn ưu tiên thoại gốc ở âm lượng đầy đủ, không phải số từ. Các cảnh lời AI giữ tiếng nguồn nhỏ dưới nền cả khi ngắt câu, đồng thời chỉ hiện phụ đề lời kể. Thanh **Tiếng gốc dưới nền lời AI** chỉnh từ 0–100% so với âm lượng gốc, mặc định 15%; chọn 0% để tắt. Bấm **Lưu âm lượng & dựng lại** để cập nhật MP4. Dịch vụ giọng đọc mặc định là VieNeu-TTS; có thể đổi sang OmniVoice trong Kết nối. Chỉ đổi âm lượng sẽ dùng lại audio; nếu đổi giọng mẫu, lời đọc hoặc cấu hình tổng hợp giọng, ứng dụng tự tạo lại các đoạn cần thiết trước khi xuất, không viết lại kịch bản. Dự án cũ chọn chế độ này trong tab **Giọng**, rồi bấm **Viết lại lời kể & tạo video** để phân tích và dựng lại. Giọng kể chung vẫn được giữ.
 - Lời kể được viết theo thời lượng cảnh và tốc độ giọng mẫu, chia thành đoạn tối đa 25 giây. OmniVoice tạo audio theo thời lượng đó; nếu lệch quá nhiều, ứng dụng yêu cầu sửa lời thay vì cắt câu hoặc chèn im lặng. Nguồn không có audio không thể giữ thoại gốc.
 - Với dự án cũ, bấm **Áp dụng giọng chung cho toàn bộ video** để thay các đoạn từng được tạo bằng giọng riêng. Sau đó dựng/xuất lại để đưa giọng mới vào MP4. Đổi giới tính hoặc ngôn ngữ dùng mẫu tương ứng; không cần phân tích AI lại chỉ để đổi giọng.
 
@@ -318,11 +390,31 @@ Phát triển giao diện: chạy backend và `npm.cmd --prefix frontend run dev
 
 Chạy `npm.cmd --prefix frontend ci`, `npm.cmd --prefix frontend run build`, rồi restart server. `frontend/dist` được tạo trên máy mới, không nằm trong Git.
 
+### Lời kể chưa khớp lịch dựng
+
+Đây là kiểm tra lời kể ở bước lập kịch bản, trước OmniVoice: mỗi cảnh cần đủ lời và không vượt ngân sách đọc. Bộ viết theo lịch tự giữ các đoạn đạt, chỉ yêu cầu sửa đoạn chưa đạt, tối đa 6 lượt mỗi nhóm trong một lần chạy. Các đoạn đạt được lưu trong `story-schedule-cache` của dự án. Nếu hết lượt, **Thử lại với cấu hình hiện tại** tiếp tục phần còn thiếu với lượt sinh mới, không lặp mãi các câu trả lời lỗi trong cache. Đổi lịch cảnh, model, ngôn ngữ hoặc quy tắc viết sẽ dùng checkpoint tương ứng.
+
+Ứng dụng vẫn kiểm tra thời lượng thực của giọng và tỷ lệ thoại gốc trước khi xuất; không chèn chữ lặp, cắt lời hay bỏ kiểm tra để ép chạy. Nếu ước lượng số từ của một đoạn chưa khớp, đoạn đó được chuyển sang vòng sửa theo audio thực (tối đa 8 lượt cho mỗi đoạn, 96 lượt mỗi job), không bắt chạy lại toàn bộ kịch bản. Lỗi API, hết hạn mức và thao tác hủy vẫn được báo riêng.
+
 ### Thiếu `cublas64_12.dll` / CUDA ASR không hoạt động
 
 Đây là lỗi thư viện GPU của faster-whisper khi nhận dạng hoặc canh phụ đề; môi trường OmniVoice riêng vẫn có thể hoạt động. AIR3view tự thử lại toàn bộ đoạn âm thanh bằng CPU int8 khi CUDA thiếu thư viện, driver không tương thích hoặc hết VRAM. Khi thành công, lựa chọn **Thiết bị ASR** của dự án được lưu thành **CPU**, tránh lặp lỗi ở từng lời dẫn. Lời kể, giọng mẫu và âm thanh đã tạo được giữ lại. Lỗi file, model hoặc thao tác hủy không bị che thành lỗi CUDA.
 
 Có thể chọn **Kết nối → Thiết bị ASR → CPU** thủ công rồi chạy **Tạo giọng OmniVoice** để tiếp tục từ audio đã lưu, sau đó **Xuất video**. Chỉ chọn lại NVIDIA CUDA khi đã cài đúng cuBLAS CUDA 12 / cuDNN 9 và GPU còn đủ bộ nhớ; xem [yêu cầu faster-whisper](https://github.com/SYSTRAN/faster-whisper#gpu).
+
+### Lời kể chỉ có 1–2 giây sau khi chia cảnh
+
+Bộ lập lịch chừa ít nhất 4 giây cho khoảng lời kể quanh các câu thoại gốc khi chọn cửa sổ mới. Các mảnh lời AI ngắn, liên tục trong cùng phần được gộp nếu tổng nhóm không quá 25 giây. Khi tạo toàn bộ giọng VieNeu hoặc dựng lại dự án cũ, ứng dụng cũng gộp các mảnh chưa có audio với cảnh AI liền kề; chỉ tạo lại nhóm thay đổi, giữ audio của cảnh khác. Không gộp qua thoại gốc, khoảng trống nguồn hoặc ranh giới phần; không đổi tổng thời lượng. Các câu đã sửa tay vẫn được giữ nguyên.
+
+### Vòng tự sửa lời kể với giọng cố định
+
+Trong workflow plan-first, mỗi đoạn lỗi lưu lịch sử số đơn vị lời và thời lượng đo ở tốc độ đã chọn. AI chỉ thêm/bớt lời ở đoạn đó, nhận nội dung transcript liên quan thay vì chỉ tên cue. Khi có một lần quá ngắn và một lần quá dài, hệ thống nội suy số từ mục tiêu giữa hai lần đo; khoảng số từ cho lượt tiếp theo được thu hẹp và phải đi đúng hướng thêm/bớt. Không đổi giọng mẫu, preset, model hoặc tốc độ người dùng để làm đoạn “đạt”. Căn audio vẫn giới hạn ±5% quanh tốc độ chung, kiểm tra WAV cuối trước khi nhận.
+
+Tối đa 8 lượt sửa nội dung mỗi đoạn và 96 lượt mỗi job; dừng ngay khi đạt. Giới hạn này tránh chạy vô hạn nếu TTS/model không hội tụ. Khi hết lượt, tiến độ và lịch sử đo được giữ để thử lại, còn lỗi mạng/model/hủy không bị coi là lỗi thời lượng. Bộ sửa dùng một schema cố định `text` ở mọi lượt. Các envelope cũ `items`/`words` chỉ được chuẩn hóa khi không mơ hồ và vẫn qua kiểm tra ngôn ngữ, câu thay đổi, hướng điều chỉnh. JSON lỗi được lưu riêng dưới `analysis-cache/*.rejected.json`, không nhập vào cache thành công. `/api/health` báo `voice_repair_version` để xác nhận bản đang chạy. Các đoạn đã đạt không chạy lại TTS hoặc ASR. Bản sửa không bảo đảm cảm xúc giống tuyệt đối giữa các lần sinh; vẫn nên nghe duyệt bản cuối.
+
+### VieNeu báo thời lượng giọng lệch so với cảnh
+
+VieNeu tạo audio theo nhịp tự nhiên và không nhận thời lượng đích như OmniVoice. AIR3view căn audio VieNeu bằng `atempo` giữ cao độ trong giới hạn 2/3–1.5×; không cắt lời hoặc thêm im lặng. Nếu ngoài giới hạn, tự sinh lại tối đa ba lượt cho đúng đoạn. Lỗi còn lại nêu rõ số giây audio/cảnh và tỷ lệ; các đoạn đã tạo được dùng lại. Lỗi kết nối, model hoặc thao tác hủy không bị thử lại như lỗi thời lượng. Chế độ kể xuyên suốt ưu tiên khớp lịch cảnh; tốc độ đọc vẫn ảnh hưởng ngân sách lời khi lập kịch bản. OmniVoice giữ giới hạn riêng 0.75–1.25× vì đã nhận thời lượng đích.
 
 ### OmniVoice chưa kết nối / không tạo được giọng
 

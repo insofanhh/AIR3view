@@ -11,6 +11,9 @@ import requests
 from . import credentials, store
 from .media import NO_WINDOW, probe, transcribe
 from .models import AnalysisAnswer, TranslationAnswer
+from .voice_repair import (DurationMismatchError, RepairBudget,
+                            duration_bounds, duration_is_acceptable,
+                            repair_text, NarrationReply, VOICE_REPAIR_VERSION)
 
 SESSION_KEY = ''
 GEMINI_SESSION_KEY = ''
@@ -159,7 +162,16 @@ def ask_ai(prompt, images, settings, folder, check, response_model=AnalysisAnswe
             details = log_path.read_text('utf-8', errors='replace')[-1200:]
             raise RuntimeError(codex_error(details))
         text = response_path.read_text('utf-8')
-    result = response_model.model_validate_json(text).model_dump()
+    try:
+        result = (response_model.parse_ai_response(text) if issubclass(response_model,NarrationReply)
+                  else response_model.model_validate_json(text)).model_dump()
+    except ValueError:
+        # Keep malformed responses for local diagnosis, never as accepted cache.
+        # Persist only this response, never authorization headers or API keys.
+        if issubclass(response_model,NarrationReply):
+            (cache / (fingerprint+'.rejected.json')).write_text(
+                json.dumps({'response':redact(text),'version':VOICE_REPAIR_VERSION},ensure_ascii=False),'utf-8')
+        raise
     temporary = output.with_suffix('.json.tmp')
     temporary.write_text(json.dumps(result, ensure_ascii=False), 'utf-8')
     temporary.replace(output)
@@ -230,6 +242,7 @@ def normalize_analysis_times(result, start, end):
 
 
 def _analyze_detailed(project, report, check):
+    from .source_policy import RULE, VERSION
     folder = store.project_dir(project['id'])
     settings = project['settings']
     if not project.get('metadata') or not project.get('frames'):
@@ -269,9 +282,10 @@ Tóm tắt trước: {summary}
 TRANSCRIPT DỮ LIỆU: {json.dumps(transcript, ensure_ascii=False)}'''
         if settings.get('narration_style') == 'storytelling':
             a, b = prompt.index('Nếu đoạn dài'), prompt.index('scenes:')
-            prompt = prompt[:a] + '''Đọc đầy đủ diễn biến, quan hệ và kết quả trong đoạn. Ghi các câu thoại quyết định cùng mốc chính xác trong evidence để biên tập chọn giữ 10–20% thoại gốc.
+            prompt = prompt[:a] + '''Đọc đầy đủ diễn biến, quan hệ và kết quả trong đoạn. Ghi các câu thoại quyết định cùng mốc chính xác trong evidence để biên tập chọn giữ thoại gốc trong mức tối đa 10–100% người dùng đặt, ưu tiên hội thoại thật và phản ứng nổi bật.
 Đề xuất lời kể theo từng chặng, giải thích bối cảnh và chuỗi sự việc có bằng chứng; không chỉ chen vài câu nhận xét. Không suy đoán động cơ. Hình tiếp tục chạy, requires_insert=false. Kịch bản cuối sẽ dành phần lớn thời lượng cho AI kể.
 ''' + prompt[b:]
+        prompt += '\n'+RULE
         result = ask_ai(prompt, images, settings, folder, check)
         if settings['review_enabled']:
             report(23 + 65 * batch / count, f'Kiểm tra kịch bản {batch+1}/{count}…')
@@ -280,11 +294,13 @@ TRANSCRIPT DỮ LIỆU: {json.dumps(transcript, ensure_ascii=False)}'''
         for scene in result['scenes']:
             scenes.append({**scene, 'id': f's{len(scenes)}'})
         for item in result['narrations']:
+            from .narration_text import clean_narration
+            item['text']=clean_narration(item['text'])
             narrations.append({**item, 'id': f'n{len(narrations)}', 'enabled': True, 'audio': '', 'audio_hash': '', 'duration': 0, 'cues': []})
         hooks.extend(result['hooks'])
         summary = result['summary']
     previous_title_language = project.get('title_language', project.get('script_language', ''))
-    project.update(scenes=scenes, narrations=sorted(narrations, key=lambda n: n['start']), hooks=hooks, summary=summary, exports=[])
+    project.update(scenes=scenes, narrations=sorted(narrations, key=lambda n: n['start']), hooks=hooks, summary=summary, exports=[],source_policy_version=VERSION)
     if hooks and not settings['title']:
         settings.update(title=hooks[0]['title'][:220], hook_start=hooks[0]['start'], hook_end=hooks[0]['end'], hook_enabled=True)
         previous_title_language = settings['language']
@@ -359,13 +375,24 @@ def localize(project, report, check):
 
 
 def voice_hash(narration, settings):
-    synthesis = {k: v for k, v in settings.items() if k.startswith('voice_') or k in ('language', 'omnivoice_url')}
+    synthesis = {k: v for k, v in settings.items() if k.startswith('voice_') or k in ('language', 'tts_provider', 'vieneu_url', 'omnivoice_url')}
+    if settings.get('tts_provider', 'vieneu') == 'omnivoice':
+        synthesis.pop('tts_provider', None)
+        synthesis.pop('vieneu_url', None)
+    else:
+        synthesis['tts_provider'] = 'vieneu'
+        synthesis['vieneu_voice'] = settings.get('vieneu_voice', '')
+        synthesis['vieneu_adapter'] = 2
+        for unused in ('omnivoice_url', 'voice_steps', 'voice_gender', 'voice_instruct'):
+            synthesis.pop(unused, None)
     # Old design clips used a random speaker per request; regenerate them once.
     if settings['voice_mode'] == 'design':
         synthesis['voice_strategy'] = 'shared-reference-v1'
         synthesis.pop('voice_reference_hash', None)
     # Mixing gain never changes synthesized speech.
     synthesis['voice_volume'] = 1.0
+    if settings.get('production_workflow') == 'plan_first':
+        synthesis['timing_policy'] = 'consistent-pace-v1'
     payload = {'text': narration['text'], 'settings': synthesis}
     if narration.get('target_duration', 0) > 0:
         payload['target_duration'] = narration['target_duration']
@@ -379,13 +406,12 @@ def voice_profile_key(settings):
 
 
 def shared_voice(project):
-    if project['settings']['voice_mode'] != 'design':
+    if project['settings'].get('tts_provider', 'vieneu') != 'omnivoice' or project['settings']['voice_mode'] != 'design':
         return None
     return project.get('voice_profiles', {}).get(voice_profile_key(project['settings']))
 
 
-def generate_voice_audio(client, params, endpoint, destination, report, check, progress, label, target_duration=0):
-    from .media import run, FFMPEG
+def _request_voice_audio(client, params, endpoint, report, check, progress, label, engine):
     check()
     task = client.submit(**params, api_name=endpoint)
     started = time.monotonic()
@@ -400,7 +426,7 @@ def generate_voice_audio(client, params, endpoint, destination, report, check, p
                 report(progress, f'{label} · {round(elapsed)}s · {code}')
                 last_status = elapsed
             if elapsed > 1200:
-                raise TimeoutError('OmniVoice quá 20 phút. Thử giảm độ dài câu hoặc số inference steps.')
+                raise TimeoutError(f'{engine} quá 20 phút. Kiểm tra dịch vụ hoặc giảm độ dài đoạn lời kể.')
             time.sleep(.5)
         check()
         output = task.result()
@@ -408,23 +434,56 @@ def generate_voice_audio(client, params, endpoint, destination, report, check, p
         task.cancel()
         raise
     audio = output[0] if isinstance(output, (tuple, list)) else output
+    if audio is None:
+        detail = output[1] if isinstance(output, (tuple, list)) and len(output) > 1 else ''
+        if engine == 'VieNeu' and ('tải model' in str(detail).lower() or 'model' in str(detail).lower()):
+            raise RuntimeError('VieNeu chưa nạp model. Mở VieNeu Studio, chọn model và bấm Load model trước khi tạo giọng.')
+        raise RuntimeError(f'{engine} không trả file audio: {detail}')
     if isinstance(audio, dict):
         audio = audio.get('path')
     if not audio or not Path(audio).is_file():
-        raise RuntimeError('OmniVoice không trả file audio. ' + str(output)[-500:])
+        raise RuntimeError(f'{engine} không trả file audio. ' + str(output)[-500:])
+    return Path(audio)
+
+
+def generate_voice_audio(client, params, endpoint, destination, report, check, progress, label, target_duration=0, speed=1, engine='OmniVoice', stable_speed=None):
+    from .media import run, FFMPEG
+    # Generate once. Repeating the same text cannot fix a deterministic
+    # duration error; the caller's bounded loop rewrites only this narration.
+    audio = _request_voice_audio(client, params, endpoint, report, check, progress, label, engine)
+    return fit_voice_audio(audio,destination,check,target_duration,speed,engine,stable_speed)
+
+
+def fit_voice_audio(audio,destination,check,target_duration=0,speed=1,engine='OmniVoice',stable_speed=None):
+    from .media import run, FFMPEG
+    measured = probe(audio)['duration']
+    if measured <= 0:
+        raise RuntimeError(f'{engine} trả audio rỗng.')
+    lower, upper = duration_bounds(engine)
+    if stable_speed is not None:
+        # VieNeu needs the global speed applied locally; OmniVoice received
+        # sp already. Only +/-5% around that fixed pace is permitted.
+        lower, upper = .95*stable_speed, 1.05*stable_speed
+    if target_duration and not lower <= measured / target_duration <= upper:
+        raise DurationMismatchError(engine, measured/(stable_speed or 1), target_duration,audio_path=audio)
     destination.parent.mkdir(exist_ok=True)
     temporary = destination.with_suffix('.tmp.wav')
     args = [FFMPEG, '-y', '-i', audio]
     if target_duration:
         factor = probe(audio)['duration'] / target_duration
-        if not .75 <= factor <= 1.25:
-            raise ValueError('Thời lượng giọng lệch quá nhiều so với cảnh. Điều chỉnh độ dài lời kể rồi tạo lại giọng; không cắt mất lời hoặc chèn im lặng.')
         args += ['-af', f'atempo={factor:.8f}']
+    elif speed != 1:
+        args += ['-af', f'atempo={speed:.8f}']
     run(args + ['-ar', '48000', '-ac', '1', temporary], check_cancel=check)
-    if probe(temporary)['duration'] <= 0:
-        raise RuntimeError('OmniVoice trả audio rỗng.')
+    final_duration = probe(temporary)['duration']
+    if final_duration <= 0:
+        raise RuntimeError(f'{engine} trả audio rỗng.')
+    if target_duration and not duration_is_acceptable(final_duration, target_duration):
+        raise DurationMismatchError(engine, measured/(stable_speed or 1), target_duration, stage='điều chỉnh',audio_path=audio)
     check()
     temporary.replace(destination)
+    return {'raw_duration': measured, 'duration_at_selected_speed': measured/(stable_speed or speed),
+            'final_duration':final_duration, 'tempo':factor if target_duration else speed}
 
 
 def ensure_shared_voice(project, client, report, check):
@@ -463,9 +522,25 @@ def ensure_shared_voice(project, client, report, check):
 
 def synthesize(project, report, check, only_id=None):
     from gradio_client import Client, handle_file
+    from .narration_text import prepare_clean_narration
+    project=prepare_clean_narration(project,only_id)
+    from .voice_repair import restore_perspective
+    if restore_perspective(project,only_id):
+        report(2,'Khôi phục lời kể đã bị vòng sửa cũ đổi nhầm thành hội thoại nguồn…')
+        store.save(project)
+    from .plan_first import contract_check
+    contract_check(project)
+    if only_id is None:
+        from .narration_language import repair_language
+        project = repair_language(project, report, check)
+    if only_id is None and project['settings'].get('tts_provider', 'vieneu') == 'vieneu' and project['settings'].get('production_workflow') != 'plan_first':
+        from .narration_groups import repair_existing
+        project = repair_existing(project, report, check)
     folder = store.project_dir(project['id'])
     settings = project['settings']
-    if settings['voice_mode'] == 'clone':
+    engine = 'VieNeu' if settings.get('tts_provider', 'vieneu') == 'vieneu' else 'OmniVoice'
+    reference_data = None
+    if settings['voice_mode'] == 'clone' and engine == 'OmniVoice':
         from .reference_voice import ensure_transcript
         ensure_transcript(project, report, check)
         # This old app default is prose, not a supported OmniVoice voice tag.
@@ -473,37 +548,156 @@ def synthesize(project, report, check, only_id=None):
             settings['voice_instruct'] = ''
     pending = [n for n in project['narrations'] if n['enabled'] and n['text'].strip() and (only_id is None or n['id'] == only_id)]
     if not pending:
+        from .story import source_led, validate_plan
+        from .hook_policy import slots
+        plan=project.get('story_plan') or {}
+        if source_led(project) and plan and not any(x['narration'].strip() for x in slots(plan)):
+            validate_plan(plan,project,check_text=False)
+            report(100,'Bản dựng dùng tiếng gốc; không cần tạo giọng AI.')
+            return project
         raise ValueError('Chưa có lời dẫn. Phân tích AI hoặc thêm một đoạn lời dẫn trước.')
     client = None
+    repair_budget = RepairBudget()
     for i, narration in enumerate(pending):
-        check()
-        fingerprint = voice_hash(narration, settings)
-        destination = folder / 'voices' / (fingerprint + '.wav')
-        cached_audio = destination.is_file() and probe(destination)['duration'] > 0
-        if cached_audio and narration.get('audio_hash') == fingerprint and narration.get('caption_version') == 4:
-            continue
-        if not cached_audio:
-            report(5 + 80 * i / len(pending), f'OmniVoice tạo giọng {i+1}/{len(pending)}…')
-            if client is None:
-                client = Client(settings['omnivoice_url'], verbose=False, download_files=str(folder / 'voice-downloads'))
+        repairs = 0
+        cached_complete = False
+        fit_metrics = None
+        while True:
+            check()
+            fingerprint = voice_hash(narration, settings)
+            destination = folder / 'voices' / (fingerprint + '.wav')
             target = narration.get('target_duration', 0)
-            common = dict(text=narration['text'], lang=settings['language'], ns=settings['voice_steps'], gs=2, dn=True, sp=settings['voice_speed'], du=target or None, pp=True, po=not bool(target))
-            if settings['voice_mode'] == 'clone':
-                if not settings['voice_reference']:
-                    raise ValueError('Chọn audio giọng mẫu trước khi dùng chế độ giọng tham chiếu.')
-                reference = settings['voice_reference']
-                reference_text = settings['voice_reference_text']
-            else:
-                profile = ensure_shared_voice(project, client, report, check)
-                reference, reference_text = profile['audio'], profile['text']
-            common.update(ref_aud=handle_file(str(store.asset(project['id'], reference))),
-                          ref_text=reference_text,
-                          # Auto-designed voices inherit the reference speaker.
-                          # OmniVoice accepts a fixed tag vocabulary here, not
-                          # the legacy free-form Vietnamese design description.
-                          instruct=settings['voice_instruct'] if settings['voice_mode'] == 'clone' else '')
-            generate_voice_audio(client, common, '/_clone_fn', destination, report, check,
-                                 5 + 80 * i / len(pending), f'OmniVoice {i+1}/{len(pending)}', target_duration=target)
+            raw_signature=voice_hash({'text':narration['text']},settings)
+            raw_cached=folder/'voice-raw'/(raw_signature+'.wav')
+            cached_audio = destination.is_file() and probe(destination)['duration'] > 0
+            try:
+                if cached_audio:
+                    cached_duration = probe(destination)['duration']
+                    if target and not duration_is_acceptable(cached_duration, target):
+                        raise DurationMismatchError(engine, cached_duration, target, stage='cache')
+                    if narration.get('audio_hash') == fingerprint and narration.get('caption_version') == 4:
+                        # The entire narration, including alignment, is done;
+                        # do not fall through and transcribe it again.
+                        cached_complete = True
+                        break
+                    # Reuse a valid cached WAV when only alignment/captions are
+                    # incomplete. The post-loop path persists/transcribes it.
+                    break
+                if not cached_audio:
+                    if settings.get('production_workflow')=='plan_first' and raw_cached.is_file():
+                        fit_metrics=fit_voice_audio(raw_cached,destination,check,target,settings['voice_speed'],engine,
+                                                    settings['voice_speed'] if engine=='VieNeu' else 1)
+                        break
+                    report(5 + 80 * i / len(pending), f'{engine} tạo giọng {i+1}/{len(pending)}…')
+                    if client is None:
+                        client = Client(settings.get('vieneu_url', 'http://localhost:7860') if engine == 'VieNeu' else settings['omnivoice_url'], verbose=False, download_files=str(folder / 'voice-downloads'))
+                        if engine == 'VieNeu':
+                            from .vieneu import ensure_ready
+                            ensure_ready(client)
+                    if engine == 'VieNeu':
+                        from .vieneu import parameters, reference_clip, synthesis_endpoint
+                        if settings['voice_mode'] == 'clone' and reference_data is None:
+                            if not settings['voice_reference']:
+                                raise ValueError('Chọn audio giọng mẫu trước khi tạo giọng VieNeu.')
+                            reference_data = reference_clip(project, report, check)
+                        params = parameters(client, settings, narration['text'], *(reference_data or (None, '')))
+                        fit_metrics = generate_voice_audio(client, params, synthesis_endpoint(settings), destination, report, check,
+                                             5 + 80 * i / len(pending), f'VieNeu {i+1}/{len(pending)}',
+                                             target_duration=target, speed=settings['voice_speed'], engine='VieNeu',
+                                             **({'stable_speed':settings['voice_speed']} if settings.get('production_workflow')=='plan_first' else {}))
+                    else:
+                        common = dict(text=narration['text'], lang=settings['language'], ns=settings['voice_steps'], gs=2, dn=True, sp=settings['voice_speed'], du=target or None, pp=True, po=not bool(target))
+                        if settings['voice_mode'] == 'clone':
+                            if not settings['voice_reference']:
+                                raise ValueError('Chọn audio giọng mẫu trước khi dùng chế độ giọng tham chiếu.')
+                            reference = settings['voice_reference']
+                            reference_text = settings['voice_reference_text']
+                        else:
+                            profile = ensure_shared_voice(project, client, report, check)
+                            reference, reference_text = profile['audio'], profile['text']
+                        common.update(ref_aud=handle_file(str(store.asset(project['id'], reference))),
+                                      ref_text=reference_text,
+                                      # Auto-designed voices inherit the reference speaker.
+                                      instruct=settings['voice_instruct'] if settings['voice_mode'] == 'clone' else '')
+                        fit_metrics = generate_voice_audio(client, common, '/_clone_fn', destination, report,
+                                             check, 5 + 80 * i / len(pending), f'OmniVoice {i+1}/{len(pending)}', target_duration=target,
+                                             **({'stable_speed':1} if settings.get('production_workflow')=='plan_first' else {}))
+                break
+            except DurationMismatchError as mismatch:
+                # Older hand-authored narrations may lack evidence/segment_id;
+                # keep their historic hard failure instead of inventing context.
+                if not target or not (narration.get('segment_id') or narration.get('evidence', '').strip()):
+                    raise ValueError(str(mismatch) + ' Điều chỉnh độ dài lời kể rồi tạo lại giọng.') from mismatch
+                state = project.setdefault('voice_repair_state', {}).setdefault(narration['id'], {})
+                state.setdefault('approved_text',narration['text'])
+                if mismatch.audio_path is not None and Path(mismatch.audio_path).is_file():
+                    import shutil
+                    raw_cached.parent.mkdir(exist_ok=True)
+                    if Path(mismatch.audio_path).resolve()!=raw_cached.resolve():
+                        temporary=raw_cached.with_suffix('.tmp.wav')
+                        shutil.copyfile(mismatch.audio_path,temporary);check();temporary.replace(raw_cached)
+                if settings.get('production_workflow')=='plan_first' and mismatch.stage!='điều chỉnh':
+                    from .scene_duration_repair import adjust,apply_in_place
+                    blockers=[]
+                    candidate=adjust(project,narration,mismatch.measured,target,diagnostics=blockers)
+                    state['scene_fit_blockers']=blockers[:8]
+                    if candidate is not None:
+                        check();apply_in_place(project,candidate);settings=project['settings']
+                        store.save(project)
+                        report(5+80*i/len(pending),f'Tự cân cảnh {narration.get("segment_id")} từ {target:.2f}s về {narration["target_duration"]:.2f}s theo giọng đã đo; giữ nguyên tốc độ…')
+                        continue
+                context = digest({'voice':voice_hash({'text':'','target_duration':target},settings),
+                                  'start':narration['start'],'evidence':narration.get('evidence','')})
+                if state.get('context') != context:
+                    state.update(context=context,history=[])
+                from .voice_repair import speech_units, source_evidence
+                sample={'text':narration['text'],'units':speech_units(narration['text']),
+                        'measured':mismatch.measured,'target':target,'stage':mismatch.stage}
+                state['history']=(state.get('history',[])+[sample])[-20:]
+                state.update(measured=mismatch.measured,target=target,status='repairing')
+                check()
+                store.save(project)
+                if not repair_budget.consume(repairs):
+                    state['status']='limit_reached'
+                    store.save(project)
+                    limit=(f'{repair_budget.max_per_narration} lượt/đoạn' if repairs>=repair_budget.max_per_narration
+                           else f'{repair_budget.max_total} lượt/job')
+                    raise ValueError(f'{narration["id"]}: {mismatch} Đã đạt {limit}; '
+                                     'tiến độ được lưu. Thử lại tiếp tục với lịch sử đã đo, không đổi giọng.') from mismatch
+                repairs += 1
+                generation = int(state.get('generation', 0)) + 1
+                state.update(generation=generation, measured=mismatch.measured, target=target,
+                             text_hash=digest(narration['text']), stage=mismatch.stage)
+                # Persist before calling AI: a later user retry must not replay
+                # the same schema-valid, semantically invalid provider cache.
+                store.save(project)
+                report(5 + 80 * i / len(pending), f'{engine} sửa lời kể đoạn {i+1}, lượt {repairs}/{repair_budget.max_per_narration}…')
+                try:
+                    rewritten = repair_text(narration['text'], source_evidence(project,narration),
+                                            settings['language'], target, mismatch.measured,
+                                            settings, folder, check, ask_ai,
+                                            generation=generation,
+                                            **({'history':state['history'],'max_attempts':3,'measured_trial':True} if settings.get('production_workflow')=='plan_first' else {}))
+                except ValueError as exc:
+                    state.update(status='rewrite_failed',last_error=str(exc))
+                    store.save(project)
+                    raise ValueError(f'{narration["id"]} ({mismatch.measured:.2f}s → {target:.2f}s): {exc} '
+                                     'Đã giữ nguyên lời kể và các đoạn hoàn tất; thử lại chỉ tiếp tục đoạn này.') from exc
+                narration.update(text=rewritten, audio='', audio_hash='', duration=0,
+                                 cues=[], caption_version=0)
+                # Keep the story-plan source in sync so a resume cannot restore
+                # the rejected sentence over this accepted checkpoint.
+                from .hook_policy import set_text
+                for plan in (project.get('story_plan') or {},(project.get('duration_plan') or {}).get('schedule') or {}):
+                    if plan:
+                        set_text(plan,narration.get('segment_id'),rewritten)
+                project.update(exports=[], preview_exports=[])
+                store.save(project)
+        if cached_complete:
+            continue
+        if fit_metrics is not None:
+            state=project.setdefault('voice_repair_state',{}).setdefault(narration['id'],{})
+            state.update(status='fitted',fit=fit_metrics,accepted_text_hash=digest(narration['text']))
         duration = probe(destination)['duration']
         # Persist synthesized audio before alignment so cancellation/ASR failures
         # can resume without repeating the expensive OmniVoice generation.
@@ -528,6 +722,8 @@ def synthesize(project, report, check, only_id=None):
 
 def prepare_render_audio(project, report, check):
     """An export after changing a speaker must synthesize that speaker first."""
+    from .narration_text import prepare_clean_narration
+    project=prepare_clean_narration(project)
     if project['settings'].get('output_mode'):
         from .story import plan_is_current
         if not plan_is_current(project):
@@ -536,6 +732,7 @@ def prepare_render_audio(project, report, check):
         if not n['enabled'] or not n['text'].strip():
             continue
         if (not n.get('audio') or n.get('duration', 0) <= 0
+                or n.get('caption_version') != 4
                 or n.get('audio_hash') != voice_hash(n, project['settings'])
                 or not store.asset(project['id'], n['audio']).is_file()):
             report(2, 'Giọng đã thay đổi hoặc chưa được tạo; tạo giọng trước khi dựng video…')

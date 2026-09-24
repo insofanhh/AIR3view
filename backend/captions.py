@@ -1,9 +1,8 @@
 """Rebuild karaoke timing from existing audio without resynthesizing voices."""
-import json
 from . import store
 from .alignment import align_script
 from .media import transcribe
-from .providers import voice_hash, digest
+from .providers import voice_hash
 
 
 def align_existing(cues, observed):
@@ -32,7 +31,7 @@ def align_existing(cues, observed):
 def refresh(project, report, check):
     folder = store.project_dir(project['id'])
     settings = project['settings']
-    voiced = [n for n in project['narrations'] if n.get('audio') and n.get('audio_hash') == voice_hash(n, settings)]
+    voiced = [n for n in project['narrations'] if n.get('enabled',True) and n.get('audio') and n.get('audio_hash') == voice_hash(n, settings)]
     for i, n in enumerate(voiced):
         check()
         if n.get('caption_version') == 4:
@@ -47,25 +46,14 @@ def refresh(project, report, check):
         n['caption_version'] = 4
         project.update(exports=[], preview_exports=[])
         store.save(project)
-    if project.get('transcript') and project['metadata'].get('has_audio'):
-        report(40, 'Canh từng từ thoại gốc từ âm thanh…')
-        source_audio = folder/'audio.wav'
-        cache = folder/'word-alignment'
-        cache.mkdir(exist_ok=True)
-        fingerprint = digest({'audio': [source_audio.stat().st_size, source_audio.stat().st_mtime_ns], 'asr': settings['asr_model'], 'version':1})
-        path = cache/(fingerprint+'.json')
-        if path.exists():
-            recognized = json.loads(path.read_text('utf-8'))
-        else:
-            recognized = transcribe(source_audio, settings, check)
-            path.write_text(json.dumps(recognized,ensure_ascii=False),'utf-8')
-        check()
-        observed = [w for c in recognized for w in c.get('words',[])]
-        project['transcript'] = align_existing(project['transcript'], observed)
-    missing = sum(not c.get('words') for c in project['transcript'])
+    from .source_captions import refresh_source
+    stats, missing_indices = refresh_source(project, report, check, transcribe, align_existing)
+    stats['plain']=len(missing_indices)
+    project['source_caption_stats'] = stats
+    missing = len(missing_indices)
     project['warnings'] = [w for w in project.get('warnings',[]) if not w.startswith('Karaoke:')]
     if missing:
-        project['warnings'].append(f'Karaoke: {missing} câu chưa có mốc từ đủ tin cậy; các câu này giữ phụ đề thường. Bản dịch không dùng mốc từ của ngôn ngữ nguồn.')
+        project['warnings'].append(f'Karaoke: {missing} câu thoại gốc được dùng chưa có mốc từ đủ tin cậy; các câu này giữ phụ đề thường. Bản dịch không dùng mốc từ của ngôn ngữ nguồn.')
     project.update(exports=[], preview_exports=[])
     report(100, 'Đã canh phụ đề theo từng từ')
     return store.save(project)

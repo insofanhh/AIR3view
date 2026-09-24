@@ -17,6 +17,22 @@ def test_local_mutations_require_header(client):
     assert client.post('/api/key',json={'api_key':''},headers={'X-AIR3view':'studio','Origin':'https://evil.example'}).status_code==403
 
 
+def test_preview_cursor_is_validated_and_persisted_for_retry(client):
+    import json
+    p=store.create('Preview cursor',{'kind':'upload','file':'source.mp4'})
+    headers={'X-AIR3view':'studio'}
+    endpoint='/api/projects/'+p['id']+'/jobs'
+    assert client.post(endpoint,json={'kind':'preview','preview_start':-1},headers=headers).status_code==422
+    reply=client.post(endpoint,json={'kind':'preview','preview_start':42.5},headers=headers)
+    assert reply.status_code==200
+    job=reply.json()
+    assert json.loads(job['options'])=={'preview_start':42.5}
+    store.update_job(job['id'],state='failed')
+    retried=client.post('/api/jobs/'+job['id']+'/retry',headers=headers)
+    assert retried.status_code==200
+    assert json.loads(retried.json()['options'])=={'preview_start':42.5}
+
+
 def test_revision_conflict_does_not_overwrite_newer_project(client):
     p=store.create('test',{'kind':'upload','file':'source.mp4'})
     edit={k:p[k] for k in ['revision','name','settings','narrations','transcript']}

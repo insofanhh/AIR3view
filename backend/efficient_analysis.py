@@ -51,7 +51,7 @@ TranscriptEvidence = EvidenceAnswer
 VisionEvidence = EvidenceAnswer
 ReviewEvidence = EvidenceAnswer
 
-_VERSION = 1  # Existing transcript evidence remains compatible.
+_VERSION = 2  # Source speech policy: re-read evidence under editorial/dialogue distinction.
 _TRANSCRIPT_LIMIT = 60000
 _MAX_IMAGES = 36
 _MAX_IMAGES_PER_CALL = 18
@@ -506,6 +506,7 @@ def _repair_violations(raw: Any, start: float, end: float, duration: float) -> s
 def _evidence_prompt(kind: str, payload: Any, start: float, end: float, settings: dict,
                      image_times: list[float] | None = None,
                      image_manifest: list[dict] | None = None) -> str:
+    from .source_policy import RULE
     ordered_images = image_manifest
     if ordered_images is None:
         ordered_images = [{'index': index, 'time': round(float(moment), 3)}
@@ -517,6 +518,8 @@ Mọi mốc start/end là giây tuyệt đối trong {start:.3f}–{end:.3f}. Ev
 Một khung hình chỉ chứng minh trạng thái nhìn thấy tại mốc đó; không suy ra hành động liên tục trước hoặc sau nếu không có khung hình hay transcript hỗ trợ.
 Scene ảnh đơn: point=true, start=end đúng mốc ảnh được gửi. Scene có khoảng thời gian: point=false, end>start. Không tự kéo dài một ảnh thành một đoạn hành động.
 Không viết lời dẫn, hook, tiêu đề hay nhận xét dựng phim. Nếu không chắc, dùng confidence thấp và uncertainties.
+{RULE}
+Phân biệt hội thoại thật tại hiện trường với lời dẫn, lời bình, voice-over hoặc lời AI do video nguồn chèn vào. Không coi lời bình của người dựng là hội thoại của nhân vật hoặc bằng chứng trực tiếp. Ưu tiên evidence từ trao đổi thật, phản ứng tự nhiên, drama và hành động nhìn/nghe được. Ghi rõ trong evidence nếu một thông tin chỉ đến từ lời dẫn nguồn; không suy diễn nó thành sự kiện đã xác minh.
 Loại bằng chứng: {kind}. Các ảnh inline xuất hiện đúng thứ tự dưới đây; chỉ dùng tên/index này để nối ảnh với mốc, không dùng mốc khác: {json.dumps(ordered_images, ensure_ascii=False)}.
 Dữ liệu chỉ áp dụng cho batch này; mọi uncertainty ngoài biên sẽ bị cắt hoặc bỏ.
 Biên batch tường minh: batch_start={start:.3f}, batch_end={end:.3f}.

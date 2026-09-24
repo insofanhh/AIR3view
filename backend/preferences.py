@@ -10,7 +10,8 @@ from .models import Settings
 
 
 PREFERENCE_KEY = 'user-defaults'
-LOCAL_FIELDS = {'title', 'hook_enabled', 'hook_start', 'hook_end', 'part_durations'}
+LOCAL_FIELDS = {'title', 'hook_enabled', 'hook_start', 'hook_end', 'part_durations',
+                'production_workflow', 'duration_min_ratio'}
 REFERENCE_FIELD = 'voice_reference'
 SHARED_FIELDS = set(Settings.model_fields) - LOCAL_FIELDS - {REFERENCE_FIELD}
 REFERENCE_EXTENSIONS = {'.wav', '.mp3', '.m4a', '.ogg', '.flac'}

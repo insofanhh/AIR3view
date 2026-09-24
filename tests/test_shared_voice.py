@@ -11,7 +11,7 @@ def voice_project(tmp_path, monkeypatch):
     monkeypatch.setattr(store, 'DB', tmp_path/'test.sqlite3')
     store.init()
     project = store.create('Shared narrator', {'kind': 'upload', 'file': 'source.mp4'})
-    project['settings']['language'] = 'English'
+    project['settings'].update(language='English', tts_provider='omnivoice', production_workflow='legacy')
     project['narrations'] = [Narration(id=f'n{i}', start=i*10, text=text).model_dump()
                              for i, text in enumerate(('First sentence.', 'Second sentence.'))]
     calls = []
@@ -54,6 +54,15 @@ def test_design_once_then_same_reference_for_all_segments_and_edits(voice_projec
     assert calls[-1]['api_name'] == '/_clone_fn'
     assert calls[-1]['ref_aud'] == reference
     assert sum(c['api_name'] == '/_design_fn' for c in calls) == 1
+
+
+def test_source_seconds_are_not_sent_to_tts_or_ai_captions(voice_project):
+    p,calls=voice_project
+    p['narrations'][0]['text']='At 138 seconds, Martina calls dispatch.'
+    result=providers.synthesize(p,lambda *a:None,lambda:None)
+    clone_calls=[c for c in calls if c['api_name']=='/_clone_fn']
+    assert clone_calls[0]['text']=='Martina calls dispatch.'
+    assert result['narrations'][0]['cues'][0]['text']=='Martina calls dispatch.'
 
 
 def test_gender_change_creates_new_reference_and_return_reuses_original(voice_project):

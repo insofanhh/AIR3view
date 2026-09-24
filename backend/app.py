@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from . import store, providers, preferences
 from .models import Model, ProjectEdit, Settings
+from pydantic import Field
 from .media import prepare, transcribe, parse_srt, Cancelled, FFMPEG
 from .render import render
 from .timeline import build
@@ -74,7 +75,11 @@ def work():
                     project = providers.localize(project, report, check)
                 if kind in ('voice', 'language', 'all') or kind.startswith('voice:'):
                     if kind == 'all' and not project['narrations']:
-                        project['warnings'].append('Đoạn quá ngắn để đề xuất lời dẫn; bản dựng chỉ có tiếng gốc. Có thể thêm lời AI thủ công.')
+                        from .story import source_led
+                        if source_led(project):
+                            report(80,'Các cảnh đã đủ tiếng gốc phù hợp; bỏ bước tạo giọng AI.')
+                        else:
+                            project['warnings'].append('Đoạn quá ngắn để đề xuất lời dẫn; bản dựng chỉ có tiếng gốc. Có thể thêm lời AI thủ công.')
                     else:
                         project = providers.synthesize(project, report, check, kind.split(':', 1)[1] if ':' in kind else None)
                 if kind == 'captions':
@@ -87,7 +92,8 @@ def work():
                         build(project, strict=True)
                         from .captions import refresh
                         project = refresh(project, report, check)
-                    render(project, report, check, preview=kind == 'preview')
+                    options=json.loads(record.get('options') or '{}')
+                    render(project, report, check, preview=kind == 'preview',preview_start=options.get('preview_start',0))
                 check()
                 store.update_job(jid, state='completed', progress=100, message='Hoàn tất')
         except Cancelled as e:
@@ -149,9 +155,15 @@ class GeminiCheckInput(Model):
 
 class JobInput(Model):
     kind: str
+    preview_start: float = Field(default=0,ge=0)
 
 
-def queue_job(pid, kind):
+class DeleteProjectInput(Model):
+    revision: int
+    confirm: Literal[True]
+
+
+def queue_job(pid, kind, options=None):
     if kind not in ('prepare', 'transcribe', 'analyze', 'localize', 'language', 'voice', 'captions', 'render', 'preview', 'all') and not re.fullmatch(r'voice:[a-zA-Z0-9_-]+', kind):
         raise ValueError('Loại tác vụ không hợp lệ.')
     project = store.read(pid)
@@ -162,7 +174,7 @@ def queue_job(pid, kind):
         from .story import plan_is_current
         if not plan_is_current(project):
             raise ValueError('Cấu hình đầu ra đã thay đổi. Phân tích AI lại trước khi tạo giọng để đọc đúng kịch bản mới.')
-    jid = store.new_job(pid, kind)
+    jid = store.new_job(pid, kind,options)
     QUEUE.put(jid)
     return store.job(jid)
 
@@ -174,7 +186,7 @@ def editable(pid):
 
 @app.get('/api/health')
 def health():
-    return {'ok': True, 'ffmpeg': bool(shutil.which(FFMPEG) or Path(FFMPEG).is_file()), 'codex': bool(providers.codex_binary()), 'api_key': bool(providers.key()), 'gemini_api_key': bool(providers.key('gemini')), 'openai_key_source': providers.key_source('openai'), 'gemini_key_source': providers.key_source('gemini'), 'version': '0.1.0'}
+    return {'ok': True, 'ffmpeg': bool(shutil.which(FFMPEG) or Path(FFMPEG).is_file()), 'codex': bool(providers.codex_binary()), 'api_key': bool(providers.key()), 'gemini_api_key': bool(providers.key('gemini')), 'openai_key_source': providers.key_source('openai'), 'gemini_key_source': providers.key_source('gemini'), 'version': '0.1.0', 'voice_repair_version':providers.VOICE_REPAIR_VERSION}
 
 
 @app.get('/api/omnivoice')
@@ -186,6 +198,23 @@ def omnivoice_status():
         return {'ok': True, 'title': config.get('title'), 'endpoints': [d['api_name'] for d in config.get('dependencies', [])]}
     except Exception:
         return {'ok': False, 'message': 'Không kết nối được OmniVoice ở cổng 8001.'}
+
+
+@app.get('/api/tts')
+def tts_status(provider: Literal['vieneu', 'omnivoice'] = 'vieneu', url: str = 'http://localhost:7860'):
+    parsed = urlparse(url)
+    if parsed.scheme != 'http' or parsed.hostname not in ('localhost', '127.0.0.1') or parsed.username or parsed.password:
+        raise ValueError('Dịch vụ giọng đọc phải dùng HTTP localhost.')
+    try:
+        response = requests.get(url.rstrip('/') + '/config', timeout=3)
+        response.raise_for_status()
+        config = response.json()
+        endpoints = {x.get('api_name') for x in config.get('dependencies', [])}
+        expected = {'wrapper', 'wrapper_1'} if provider == 'vieneu' else {'_clone_fn', '_design_fn'}
+        return {'ok': expected <= endpoints, 'provider': provider, 'title': config.get('title'),
+                'message': 'Kết nối API; cần nạp model trong dịch vụ trước khi tạo giọng.'}
+    except Exception:
+        return {'ok': False, 'provider': provider, 'message': 'Không kết nối được dịch vụ giọng đọc.'}
 
 
 @app.post('/api/gemini/models')
@@ -283,6 +312,16 @@ def get_project(pid: str):
     return present_project(store.read(pid))
 
 
+@app.delete('/api/projects/{pid}')
+def delete_project(pid: str, body: DeleteProjectInput):
+    try:
+        return store.delete_project(pid,body.revision)
+    except RuntimeError as exc:
+        raise HTTPException(409,str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(409,'Chưa xóa hết file dự án; có thể file đang được sử dụng. Đóng trình phát/file liên quan rồi thử xóa lại. Dự án vẫn còn trong danh sách.') from exc
+
+
 @app.post('/api/projects/{pid}/apply-preferences')
 def apply_preferences(pid: str):
     with store.LOCK:
@@ -309,10 +348,12 @@ def edit_project(pid: str, body: ProjectEdit):
                 store.asset(pid, n['audio'])
         if incoming['settings']['voice_reference']:
             store.asset(pid, incoming['settings']['voice_reference'])
-        # Limit server-side TTS requests to the explicitly configured local service.
-        tts_url = urlparse(incoming['settings']['omnivoice_url'])
-        if tts_url.scheme != 'http' or tts_url.hostname not in ('127.0.0.1', 'localhost'):
-            raise ValueError('Bản local chỉ kết nối OmniVoice qua HTTP localhost.')
+        # Limit server-side TTS requests to explicitly configured local services.
+        for label, value in (('VieNeu', incoming['settings']['vieneu_url']),
+                             ('OmniVoice', incoming['settings']['omnivoice_url'])):
+            tts_url = urlparse(value)
+            if tts_url.scheme != 'http' or tts_url.hostname not in ('127.0.0.1', 'localhost'):
+                raise ValueError(f'Bản local chỉ kết nối {label} qua HTTP localhost.')
         def clear_stale_words(new_cues, old_cues):
             old_by_id = {c['id']: c for c in old_cues}
             changed = False
@@ -354,7 +395,7 @@ def project_jobs(pid: str):
 
 @app.post('/api/projects/{pid}/jobs')
 def start_job(pid: str, body: JobInput):
-    return queue_job(pid, body.kind)
+    return queue_job(pid, body.kind,{'preview_start':body.preview_start} if body.kind=='preview' else {})
 
 
 @app.post('/api/jobs/{jid}/cancel')
@@ -368,7 +409,7 @@ def cancel_job(jid: str):
 @app.post('/api/jobs/{jid}/retry')
 def retry_job(jid: str):
     record = store.job(jid)
-    return queue_job(record['project_id'], record['kind'])
+    return queue_job(record['project_id'], record['kind'],json.loads(record.get('options') or '{}'))
 
 
 @app.post('/api/projects/{pid}/subtitles')

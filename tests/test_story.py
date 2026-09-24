@@ -69,6 +69,9 @@ def test_single_video_selects_beginning_middle_ending_and_maps_voice(monkeypatch
     assert [v['start'] for v in t['voices']]==[6,14,24]
     assert next(c for c in t['cues'] if c['text']=='Listen')['words'][0]['start']==20
     assert all(c['kind']!='freeze' for c in t['clips'])
+    assert p['duration_plan']['mode']=='duration-first'
+    assert len(p['duration_plan']['slots'])==3
+    assert p['duration_plan']['slots'][0]['voice_target']==9.96
     assert [n['section'] for n in p['narrations']]==['opening','development','ending']
 
 
@@ -195,7 +198,7 @@ def test_plan_is_written_after_entire_video_analysis(tmp_path,monkeypatch):
     p=store.create('Whole story',{'kind':'upload','file':'source.mp4'})
     p.update(metadata={'duration':120,'has_audio':True},frames=[{'time':0,'file':'a.jpg'},{'time':70,'file':'b.jpg'}],
              transcript=[{'id':'end','start':115,'end':118,'text':'The final outcome.'}])
-    p['settings'].update(review_enabled=False,summary_seconds=40,narration_style='highlights',analysis_workflow='detailed')
+    p['settings'].update(review_enabled=False,summary_seconds=40,narration_style='highlights',analysis_workflow='detailed',production_workflow='legacy',duration_min_ratio=.75)
     calls=[]
     def fake(prompt,images,settings,folder,check,response_model=None):
         calls.append(prompt)

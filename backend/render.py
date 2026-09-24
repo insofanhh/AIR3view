@@ -1,14 +1,66 @@
-import json
-import math
 import re
 import os
-import textwrap
-from pathlib import Path
+import subprocess
 from PIL import ImageFont
 from . import store
-from .media import FFMPEG, run, probe
-from .timeline import build, slice_clips
-from .providers import digest
+from .media import FFMPEG, run, probe, NO_WINDOW
+from .timeline import slice_clips
+
+_NVENC = None
+
+
+def nvenc_available():
+    global _NVENC
+    if _NVENC is not None:
+        return _NVENC
+    try:
+        # Being listed by -encoders proves compile-time support only. Verify
+        # driver/device initialization with a real tiny encode to the null muxer.
+        result = subprocess.run([str(FFMPEG), '-hide_banner', '-loglevel', 'error',
+            '-f','lavfi','-i','color=c=black:s=640x360:r=30:d=0.1',
+            '-frames:v','1','-c:v','h264_nvenc','-preset','p4','-f','null','-'],
+            stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=10,creationflags=NO_WINDOW)
+        _NVENC = result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        _NVENC = False
+    return _NVENC
+
+
+def video_encoder_args(encoder):
+    if encoder == 'nvenc':
+        return ['-c:v','h264_nvenc','-preset','p4','-rc','vbr','-cq','26','-b:v','0']
+    return ['-c:v','libx264','-preset','veryfast','-crf','20']
+
+
+def device_error(message):
+    return any(x in str(message).lower() for x in (
+        'cannot load nvcuda','cannot load nvencodeapi','no nvenc capable devices',
+        'openencodesessionex failed','initializeencoder failed','cannot init cuda',
+        'cuda_error_out_of_memory','driver does not support','minimum required nvidia driver','no capable devices found'))
+
+
+def run_encoded(prefix, suffix, preference, folder, check, progress=None, duration=0):
+    """Auto retries on CPU only for known NVENC initialization/device errors."""
+    global _NVENC
+    check()
+    encoder = 'nvenc' if preference=='nvenc' or (preference=='auto' and nvenc_available()) else 'cpu'
+    check()
+    def execute(args):
+        if progress is None:
+            return run(args,cwd=folder,check_cancel=check)
+        from .render_progress import run_progress
+        return run_progress(args,folder,check,duration,progress)
+    try:
+        execute(prefix+video_encoder_args(encoder)+suffix)
+    except RuntimeError as exc:
+        message=str(exc).lower()
+        if preference!='auto' or encoder!='nvenc' or not device_error(message):
+            raise
+        check()
+        _NVENC=False
+        encoder='cpu'
+        execute(prefix+video_encoder_args(encoder)+suffix)
+    return encoder
 
 
 def ass_time(seconds):
@@ -90,15 +142,19 @@ def caption_events(cue, settings, part):
 
 
 def layout(settings):
+    inset = settings.get('subtitle_bottom_margin', 10)
     if settings.get('layout_preset') == 'reference':
-        return dict(top=450, height=1000, inside=1340, below=1480, part=1580)
-    return dict(top=330, height=1080, inside=1310, below=1470, part=1760)
+        return dict(top=450, height=1000, inside=1450-inset, below=1480, part=1580)
+    return dict(top=330, height=1080, inside=1410-inset, below=1470, part=1760)
 
 
-def write_subtitles(folder, project, timeline, part):
+def subtitle_documents(project, timeline, part):
     settings = project['settings']
     duration = part['duration']
     geometry = layout(settings)
+    inside = settings['subtitle_position']=='inside'
+    subtitle_anchor = 2 if inside else 8
+    subtitle_margin = 1920-geometry['inside'] if inside else geometry['below']
     header = f'''[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -109,7 +165,7 @@ ScaledBorderAndShadow: yes
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Title,Arial,{settings['title_size']},&H00FFFFFF,&H00FFFFFF,&H90000000,&H90000000,-1,0,0,0,100,100,0,0,1,2,0,8,65,65,130,1
-Style: Sub,Arial,{settings['subtitle_size']},{ass_color(settings['subtitle_color'])},&H00FFFFFF,&H00202020,&H90000000,-1,0,0,0,100,100,0,0,1,3,1,8,65,65,{geometry[settings['subtitle_position']]},1
+Style: Sub,Arial,{settings['subtitle_size']},{ass_color(settings['subtitle_color'])},&H00FFFFFF,&H00202020,&H90000000,-1,0,0,0,100,100,0,0,1,3,1,{subtitle_anchor},65,65,{subtitle_margin},1
 Style: Part,Arial,32,&H00FFFFFF,&H00FFFFFF,&H70000000,&H70000000,-1,0,0,0,100,100,1,0,3,8,0,8,50,50,{geometry["part"]},1
 
 [Events]
@@ -135,20 +191,29 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         srt.append(f"{len(srt)+1}\n{srt_time(a)} --> {srt_time(b)}\n{cue['text']}\n")
         if settings['subtitles']:
             events.extend(caption_events(cue, settings, part))
+    return header + '\n'.join(events), '\n'.join(srt)
+
+
+def write_subtitles(folder, project, timeline, part):
+    ass,srt=subtitle_documents(project,timeline,part)
     name = f"part-{part['index']:03d}"
-    (folder / (name + '.ass')).write_text(header + '\n'.join(events), 'utf-8-sig')
-    (folder / (name + '.srt')).write_text('\n'.join(srt), 'utf-8-sig')
+    (folder / (name + '.ass')).write_text(ass, 'utf-8-sig')
+    (folder / (name + '.srt')).write_text(srt, 'utf-8-sig')
     return name
 
 
-def render_part(project, timeline, part, folder, check, width=1080):
+def render_part(project, timeline, part, folder, check, width=1080, *, video_only=False, progress=None):
     settings = project['settings']
     geometry = layout(settings)
-    height = geometry['height']
+    scale=width/1080
+    even=lambda value:max(2,round(value*scale/2)*2)
+    height = even(geometry['height'])
+    canvas_height=round(width*16/9)
+    top=round(geometry['top']*scale)
     source = store.asset(project['id'], project['source']['file'])
     name = write_subtitles(folder, project, timeline, part)
     clips = slice_clips(timeline, part['start'], part['end'])
-    voices = [v for v in timeline['voices'] if v['end'] > part['start'] and v['start'] < part['end']]
+    voices = [] if video_only else [v for v in timeline['voices'] if v['end'] > part['start'] and v['start'] < part['end']]
     # Give each clip its own bounded, seeked input. Reusing one decoded input
     # for a later hook followed by an earlier source section made concat buffer
     # hundreds of full-HD frames and exhaust RAM before the hook finished.
@@ -175,28 +240,32 @@ def render_part(project, timeline, part, folder, check, width=1080):
                 filters.append(f'[{i}:a]atrim=start={start:.6f}:duration={length:.6f},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,apad,atrim=duration={length:.6f}[a{i}]')
             else:
                 filters.append(f'anullsrc=r=48000:cl=stereo,atrim=duration={length:.6f}[a{i}]')
-        streams.append(f'[v{i}][a{i}]')
-    filters.append(''.join(streams) + f'concat=n={len(clips)}:v=1:a=1[video][original]')
+        if video_only:
+            filters=[f for f in filters if not f.endswith(f'[a{i}]')]
+        streams.append(f'[v{i}]' if video_only else f'[v{i}][a{i}]')
+    filters.append(''.join(streams) + (f'concat=n={len(clips)}:v=1:a=0[video]' if video_only else f'concat=n={len(clips)}:v=1:a=1[video][original]'))
     color = settings['background']
     if settings['background_mode'] == 'blur':
-        filters += ['[video]split=2[fgin][bgin]', '[bgin]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,gblur=sigma=15,scale=1080:1920[background]']
+        bw,bh=even(270),even(480)
+        filters += ['[video]split=2[fgin][bgin]', f'[bgin]scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh},gblur=sigma={max(1,15*scale)},scale={width}:{canvas_height}[background]']
     else:
-        filters += [f'color=c={color}:s=1080x1920:r=30:d={part["duration"]}[background]', '[video]null[fgin]']
+        filters += [f'color=c={color}:s={width}x{canvas_height}:r=30:d={part["duration"]}[background]', '[video]null[fgin]']
     if settings['fit'] == 'cover':
         x, y = settings['crop_x'] / 100, settings['crop_y'] / 100
-        filters.append(f'[fgin]scale=1080:{height}:force_original_aspect_ratio=increase,crop=1080:{height}:(iw-1080)*{x}:(ih-{height})*{y}[square]')
+        filters.append(f'[fgin]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}:(iw-{width})*{x}:(ih-{height})*{y}[square]')
     else:
-        filters.append(f'[fgin]scale=1080:{height}:force_original_aspect_ratio=decrease,pad=1080:{height}:(ow-iw)/2:(oh-ih)/2:color={color}[square]')
+        filters.append(f'[fgin]scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color={color}[square]')
     if settings.get('source_subtitle_blur'):
-        band = int(height * .22) // 2 * 2
+        band = int(height * settings.get('source_subtitle_blur_height', 22) / 100) // 2 * 2
         filters += [
             '[square]split=2[base][captionarea]',
-            f'[captionarea]crop=1080:{band}:0:{height-band},scale=270:{band//4},gblur=sigma=8,scale=1080:{band}[softcaptionarea]',
+            f'[captionarea]crop={width}:{band}:0:{height-band},scale={even(270)}:{max(2,band//4)},gblur=sigma={max(1,8*scale)},scale={width}:{band}[softcaptionarea]',
             f'[base][softcaptionarea]overlay=0:{height-band}:shortest=1[clean_square]',
         ]
     else:
         filters.append('[square]null[clean_square]')
-    filters.append(f'[background][clean_square]overlay=0:{geometry["top"]}:shortest=1,ass=filename={name}.ass,scale={width}:{round(width*16/9)},format=yuv420p,setsar=1[outv]')
+    filters.append(f'[background][clean_square]overlay=0:{top}:shortest=1,ass=filename={name}.ass,format=yuv420p,setsar=1[outv]')
+    video_filter_count=len(filters)
     duck = '+'.join(f'between(t,{max(0,v["start"]-part["start"]):.6f},{min(part["duration"],v["end"]-part["start"]):.6f})' for v in voices) or '0'
     gate = '1'
     if 'original_audio' in timeline:
@@ -207,6 +276,10 @@ def render_part(project, timeline, part, folder, check, width=1080):
     level = f"if(gt({duck},0),{settings['duck_volume']},1)"
     if 'original_audio' in timeline:
         level = f"if(gt({gate},0),{level},{settings['duck_volume']})"
+    mute = '+'.join(f'between(t,{max(0,x["start"]-part["start"]):.6f},{min(part["duration"],x["end"]-part["start"]):.6f})'
+                    for x in timeline.get('source_mutes',[]) if x['end']>part['start'] and x['start']<part['end'])
+    if mute:
+        level = f"if(gt({mute},0),0,{level})"
     filters.append(f"[original]volume='{settings['original_volume']}*({level})':eval=frame[ducked]")
     mix = ['[ducked]']
     for i, v in enumerate(voices):
@@ -216,44 +289,24 @@ def render_part(project, timeline, part, folder, check, width=1080):
         filters.append(f'[{i+len(clips)}:a]atrim=start={a:.6f}:end={b:.6f},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,volume={settings["voice_volume"]},adelay={delay}S:all=1[voice{i}]')
         mix.append(f'[voice{i}]')
     filters.append(''.join(mix) + f'amix=inputs={len(mix)}:duration=first:normalize=0,alimiter=limit=0.95:latency=1[outa]')
+    if video_only:
+        filters=filters[:video_filter_count]
     graph = folder / (name + '.filters.txt')
     graph.write_text(';\n'.join(filters), 'utf-8')
     output = folder / (name + '.mp4')
     temporary = folder / (name + '.tmp.mp4')
-    args += ['-filter_complex_threads', '2', '-filter_complex_script', graph.name, '-map', '[outv]', '-map', '[outa]', '-t', f'{part["duration"]:.6f}', '-r', '30', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-threads', '4', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(temporary)]
-    run(args, cwd=folder, check_cancel=check)
+    args += ['-filter_complex_threads', str(min(4,os.cpu_count() or 1)), '-filter_complex_script', graph.name, '-map', '[outv]']
+    args += ['-an'] if video_only else ['-map','[outa]']
+    args += ['-t', f'{part["duration"]:.6f}', '-r', '30']
+    suffix=['-threads',str(min(8,os.cpu_count() or 1)),* ([] if video_only else ['-c:a','aac','-b:a','192k']),'-movflags','+faststart',str(temporary)]
+    encoder=run_encoded(args,suffix,settings.get('render_encoder','auto'),folder,check,progress,part['duration'])
     metadata = probe(temporary)
     if abs(metadata['duration'] - part['duration']) > .1 or metadata['width'] != width:
         raise RuntimeError('Kiểm tra file xuất không đạt thời lượng/kích thước. Chưa công bố file này.')
     temporary.replace(output)
-    return {'part': part['index'], 'file': output.relative_to(store.project_dir(project['id'])).as_posix(), 'srt': (folder / (name + '.srt')).relative_to(store.project_dir(project['id'])).as_posix(), 'ass': (folder / (name + '.ass')).relative_to(store.project_dir(project['id'])).as_posix(), 'duration': metadata['duration'], 'width': metadata['width'], 'height': metadata['height']}
+    return {'part': part['index'], 'file': output.relative_to(store.project_dir(project['id'])).as_posix(), 'srt': (folder / (name + '.srt')).relative_to(store.project_dir(project['id'])).as_posix(), 'ass': (folder / (name + '.ass')).relative_to(store.project_dir(project['id'])).as_posix(), 'duration': metadata['duration'], 'width': metadata['width'], 'height': metadata['height'], 'encoder':encoder}
 
 
-def render(project, report, check, preview=False):
-    timeline = build(project, strict=True)
-    if not timeline['clips']:
-        raise ValueError('Chưa có video để xuất.')
-    fingerprint = digest({'source': project['source'], 'settings': project['settings'], 'narrations': project['narrations'], 'transcript': project['transcript'], 'preview': preview, 'renderer': 10, 'story_plan': project.get('story_plan')})[:16]
-    folder = store.project_dir(project['id']) / 'renders' / fingerprint
-    folder.mkdir(parents=True, exist_ok=True)
-    parts = timeline['parts'][:1] if preview else timeline['parts']
-    exports = []
-    for i, part in enumerate(parts):
-        check()
-        report(5 + 90 * i / len(parts), f"Đang dựng {'bản xem thử' if preview else 'phần'} {part['index']}/{len(parts)}…")
-        manifest = folder / f"part-{part['index']:03d}.result.json"
-        result = None
-        if manifest.exists():
-            candidate = json.loads(manifest.read_text('utf-8'))
-            if all(store.asset(project['id'], candidate[k]).is_file() for k in ('file', 'srt', 'ass')):
-                result = candidate
-        if result is None:
-            result = render_part(project, timeline, part, folder, check, width=360 if preview else 1080)
-            manifest.write_text(json.dumps(result), 'utf-8')
-        exports.append(result)
-        project['preview_exports' if preview else 'exports'] = exports
-        store.save(project)
-    (folder / 'timeline.json').write_text(json.dumps(timeline, ensure_ascii=False, indent=2), 'utf-8')
-    project['warnings'] = list(dict.fromkeys(project['warnings'] + timeline['warnings']))
-    report(100, 'Đã xuất video')
-    return store.save(project)
+def render(project, report, check, preview=False, preview_start=0):
+    from .render_cache import render_cached
+    return render_cached(project,report,check,preview,preview_start)
