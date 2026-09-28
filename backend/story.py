@@ -311,7 +311,9 @@ def plan_fingerprint(project):
     if workflow == 'plan_first':
         names += ['production_workflow', 'duration_min_ratio']
     names += ['summary_seconds'] if s.get('output_mode') == 'single' else ['part_count', 'part_seconds']
-    if storytelling(s):
+    if reaction_cops(s):
+        names += ['narration_style', 'reaction_commentary_count']
+    elif storytelling(s):
         names += ['narration_style', 'original_dialogue_ratio']
     else:
         names += ['opening_delay']
@@ -344,7 +346,8 @@ def plan_is_current(project):
         return False
     saved = project.get('plan_fingerprint')
     # Accept an existing plan only when its old inputs still match exactly.
-    return saved == plan_fingerprint(project) or saved == legacy_plan_fingerprint(project)
+    return saved == plan_fingerprint(project) or (not reaction_cops(project['settings'])
+                                                 and saved == legacy_plan_fingerprint(project))
 
 
 def validate_plan(result, project, *, check_text=True):
@@ -435,7 +438,9 @@ def can_resume_story(project):
     try:
         if project['settings'].get('production_workflow') == 'plan_first':
             from .story_bridges import VERSION as BRIDGE_VERSION
-            if project['settings'].get('original_dialogue_ratio',.15)>.5 and project.get('story_bridge_version')!=BRIDGE_VERSION:
+            if (not reaction_cops(project['settings'])
+                    and project['settings'].get('original_dialogue_ratio',.15)>.5
+                    and project.get('story_bridge_version')!=BRIDGE_VERSION):
                 return False
             from .retention import VERSION as RETENTION_VERSION
             if project.get('retention_policy_version')!=RETENTION_VERSION:

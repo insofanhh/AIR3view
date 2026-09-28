@@ -11,6 +11,8 @@ from .models import Settings
 
 PREFERENCE_KEY = 'user-defaults'
 LOCAL_FIELDS = {'title', 'editorial_mode', 'hook_enabled', 'hook_start', 'hook_end', 'part_durations',
+                'output_mode', 'part_count', 'part_seconds', 'split_mode',
+                'export_mode', 'export_part_count',
                 'production_workflow', 'duration_min_ratio'}
 REFERENCE_FIELD = 'voice_reference'
 SHARED_FIELDS = set(Settings.model_fields) - LOCAL_FIELDS - {REFERENCE_FIELD}
@@ -198,9 +200,13 @@ def apply(project):
     updated_settings = settings_for_project(project['id'], project['settings'])
     changed = updated_settings != project['settings']
     if changed:
+        old_settings = _normalized(project['settings'])
+        export_only = all(updated_settings[key] == old_settings[key]
+                          for key in old_settings if key not in {'export_mode', 'export_part_count'})
         project['settings'] = updated_settings
-        project['exports'] = []
-        project['preview_exports'] = []
+        if not export_only:
+            project['exports'] = []
+            project['preview_exports'] = []
     return project, changed
 
 

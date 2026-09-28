@@ -38,3 +38,5 @@
 .project-open{display:block;width:100%;padding:0;text-align:left}.project-open>svg{position:absolute;bottom:30px;right:15px;color:#6c7b8d}.project-delete{position:absolute;top:9px;right:9px;width:33px;height:33px;display:grid;place-items:center;border-radius:6px;background:#161b24e8;border:1px solid #6a4a4a;color:#ffb7ac}.project-delete:hover{background:#783a37;color:white}.delete-project-name{font-weight:600;color:#e8edf5!important;overflow-wrap:anywhere}.delete-project-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}.danger-button{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid #cf736a;background:#9b3932;color:#fff;padding:10px 14px;border-radius:6px;font-weight:600}.danger-button:hover{background:#b4473e}.delete-project-error{color:#ffb5a9!important}
 
 .duration-controls .field{margin-top:14px}.duration-warning{font-size:10px;line-height:1.7;color:#ffba9c;margin:12px 0}
+/* Keep the retry countdown beside the action while the full error stays readable. */
+.job-failure>.auto-retry-note{flex:0 0 auto;color:#d9c18e;white-space:nowrap}

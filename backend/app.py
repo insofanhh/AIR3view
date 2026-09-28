@@ -379,9 +379,17 @@ def edit_project(pid: str, body: ProjectEdit):
             # Migrate a verified old signature before applying edits. Never
             # bless already stale plans or recompute from changed settings.
             project['plan_fingerprint'] = plan_fingerprint(project)
+        previous_settings = Settings.model_validate(project['settings']).model_dump()
+        changed_settings = {key for key, value in incoming['settings'].items()
+                            if value != previous_settings.get(key)}
+        export_only = (changed_settings <= {'export_mode', 'export_part_count'}
+                       and incoming['name'] == project.get('name', incoming['name'])
+                       and incoming['narrations'] == project['narrations']
+                       and incoming['transcript'] == project['transcript'])
         project.update(incoming)
-        project['exports'] = []
-        project['preview_exports'] = []
+        if not export_only:
+            project['exports'] = []
+            project['preview_exports'] = []
         build(project)  # validate ranges before persisting
         project = preferences.save_project(project)
         return present_project(project)

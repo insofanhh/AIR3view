@@ -124,6 +124,37 @@ def test_output_settings_are_saved_before_running_and_validate_count(client):
     assert client.put('/api/projects/'+p['id'],json=edit,headers={'X-AIR3view':'studio'}).status_code==422
 
 
+def test_export_split_setting_preserves_script_and_existing_files(client):
+    from backend.story import plan_fingerprint
+    p=store.create('Completed video',{'kind':'upload','file':'source.mp4'})
+    p['metadata']={'duration':120,'has_audio':True}
+    p['exports']=[{'part':1,'file':'renders/old.mp4'}]
+    p=store.save(p)
+    before=plan_fingerprint(p)
+    edit={k:p[k] for k in ['revision','name','settings','narrations','transcript']}
+    edit['settings'].update(export_mode='parts',export_part_count=2)
+    response=client.put('/api/projects/'+p['id'],json=edit,headers={'X-AIR3view':'studio'})
+    assert response.status_code==200
+    result=response.json()
+    assert result['exports']==p['exports']
+    assert plan_fingerprint(result)==before
+    assert result['settings']['summary_seconds']==p['settings']['summary_seconds']
+
+
+def test_legacy_editorial_parts_migrate_to_complete_video_plus_export_split(client):
+    p=store.create('Old multipart',{'kind':'upload','file':'source.mp4'})
+    p['settings'].update(output_mode='parts',part_count=3,part_seconds=70)
+    p['exports']=[{'part':1,'file':'renders/old.mp4'}]
+    store.save(p)
+    store.init()
+    migrated=store.read(p['id'])
+    assert migrated['settings']['output_mode']=='single'
+    assert migrated['settings']['summary_seconds']==210
+    assert migrated['settings']['export_mode']=='parts'
+    assert migrated['settings']['export_part_count']==3
+    assert migrated['exports']==p['exports']
+
+
 def test_old_project_must_choose_output_before_auto_job(client):
     from backend.app import queue_job
     p=store.create('Legacy',{'kind':'upload','file':'source.mp4'})

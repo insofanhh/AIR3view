@@ -44,6 +44,19 @@ def init():
                 settings['production_workflow'] = 'legacy'
                 settings['duration_min_ratio'] = .75
                 tts_changed = True
+            if settings.get('output_mode') == 'parts':
+                # Previous versions asked AI to write separate stories per part.
+                # Keep old exports accessible while future analyses use one
+                # complete story, then split only at export time.
+                old_count = int(settings.get('part_count', 3))
+                settings['summary_seconds'] = min(1800, max(10,
+                    old_count * float(settings.get('part_seconds', 60))))
+                settings['export_mode'] = 'parts' if old_count > 1 else 'single'
+                settings['export_part_count'] = max(2, min(100, old_count))
+                settings['output_mode'] = 'single'
+                project.setdefault('warnings', []).append(
+                    'Chế độ nhiều phần cũ đã chuyển sang chia lúc xuất. Phân tích lại để tạo một kịch bản hoàn chỉnh trước khi dựng mới.')
+                tts_changed = True
             if project.get('playback_version', 0) < 2:
                 settings.update(narration_mode='overlay', duck_volume=0)
                 project.update(playback_version=2, exports=[], preview_exports=[])
@@ -87,7 +100,7 @@ def create(name, source):
     settings.update(production_workflow='plan_first', duration_min_ratio=.9)
     from . import preferences
     settings = preferences.settings_for_project(pid, settings)
-    settings.update(production_workflow='plan_first', duration_min_ratio=.9)
+    settings.update(output_mode='single', production_workflow='plan_first', duration_min_ratio=.9)
     return save({'id': pid, 'name': name, 'source': source, 'created': time.time(), 'playback_version': 2, 'settings': settings, 'metadata': {}, 'scenes': [], 'frames': [], 'transcript': [], 'narrations': [], 'hooks': [], 'summary': '', 'exports': [], 'warnings': [], 'revision': 0})
 
 

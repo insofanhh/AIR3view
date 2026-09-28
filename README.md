@@ -4,10 +4,9 @@
 
 ## Tính năng
 
-- **Một video tóm tắt:** chọn highlight từ toàn bộ nguồn, ưu tiên diễn biến nhanh, căng thẳng và đối thoại nổi bật có bằng chứng, giữ bối cảnh và kết quả.
-- **Nhiều phần:** đặt số phần và thời lượng mong muốn mỗi phần trước khi chạy.
+- **Một video hoàn chỉnh:** AI chọn cảnh từ toàn bộ nguồn và giữ diễn biến chính. Tại bước xuất, có thể giữ một tệp hoặc chia đều bản dựng hoàn chỉnh thành nhiều phần mà không lập lại kịch bản.
 - Lời dẫn có **Mở đầu → Diễn biến → Kết thúc**. Mở đầu phát sau hook và một đoạn hình gốc; kết thúc nêu kết quả và bài học.
-- **Reaction COPS** là chế độ riêng trong “Cách xuất video”: tối ưu cue nguồn có ánh xạ, chỉ dùng hội thoại hiện trường đã xác minh để chọn cảnh và viết các điểm COMMENTARY, không tạo intro/outro. Hook mặc định tắt; khi bật chỉ nhận cảnh 3–7 giây có tiếng thật phù hợp, không thay bằng lời hook AI. Nếu thiếu bằng chứng hiện trường, tác vụ báo `not_enough_evidence` thay vì lấy lời dẫn hậu kỳ để bù. Quy tắc gốc: [Reaction COPS master prompt](docs/reaction_cops_commentary_only_master_upgraded.md).
+- **Reaction COPS** là chế độ riêng trong “Cách xuất video”: tối ưu cue nguồn có ánh xạ, chỉ dùng hội thoại hiện trường đã xác minh để chọn cảnh và viết các điểm COMMENTARY, không tạo intro/outro. Trong tab Giọng, **Số commentary** thay thanh tỷ lệ thoại gốc; chọn 1–10 điểm (mặc định 5). Nếu nguồn không đủ bước ngoặt riêng có chứng cứ, tool dùng ít điểm hơn và cảnh báo thay vì thêm lời bình yếu. Hook mặc định tắt; khi bật chỉ nhận cảnh 3–7 giây có tiếng thật phù hợp, không thay bằng lời hook AI. Nếu thiếu bằng chứng hiện trường, tác vụ báo `not_enough_evidence` thay vì lấy lời dẫn hậu kỳ để bù. Quy tắc gốc: [Reaction COPS master prompt](docs/reaction_cops_commentary_only_master_upgraded.md).
 - Thời lượng nhập trong Reaction COPS là mục tiêu ưu tiên. Bộ lập lịch đo toàn bộ khoảng hội thoại hiện trường sạch, tự bổ sung cảnh nếu cue mẫu AI chọn quá ít, và tự giảm mục tiêu khi nguồn hoặc giới hạn số điểm COMMENTARY không đủ. Dự án lưu thời lượng yêu cầu, mục tiêu khả thi và thời lượng thực tế trong `duration_plan.reaction_budget`; phần cảnh báo nêu rõ chênh lệch đáng kể. Không lặp cảnh, lấy lời dẫn nguồn hoặc đệm im lặng để bù thời gian.
 - Hình tiếp tục chạy khi AI nói; tiếng gốc mặc định tắt trong đoạn AI, bật lại sau đó.
 - Ngôn ngữ đầu ra cho title, lời AI và phụ đề; có tiếng Việt và English.
@@ -205,14 +204,12 @@ Server chỉ nghe localhost. Chạy **một instance AIR3view cho mỗi thư m�
 ## 6. Quy trình sử dụng
 
 1. Nhập link YouTube hoặc file video; chờ bước chuẩn bị proxy, WAV và khung hình hoàn tất.
-2. Mở **Đầu ra**, chọn một trong hai chế độ:
-   - **Một video tóm tắt:** đặt thời lượng mong muốn 30–1800 giây.
-   - **Nhiều phần:** đặt số phần 1–100 và thời lượng mong muốn mỗi phần; luồng biên tập hiện yêu cầu tối thiểu 30 giây/phần.
+2. Mở **Đầu ra**, đặt thời lượng mong muốn cho một video hoàn chỉnh; nhập 0 để lấy theo độ dài video gốc.
 3. Chọn ngôn ngữ text + voice và độ dài đoạn hình gốc trước lời mở đầu (mặc định 3 giây).
 4. Bấm **Chạy toàn bộ**, hoặc chạy từng bước để duyệt: **AI phân tích & biên kịch → Tạo giọng → Dựng video**. Nguồn đã chuẩn bị được dùng lại.
 5. Trong **Cảnh**, xem mốc nguồn và lý do chọn highlight. Trong **Lời AI**, duyệt các nhãn Mở đầu/Diễn biến/Kết thúc, sửa câu rồi tạo lại giọng.
 6. Trong **Bố cục**, chỉnh title, nền, crop, cỡ phụ đề và màu highlight. Bật làm mờ phụ đề dính sẵn nếu chữ nguồn chồng với chữ mới.
-7. **Dựng thử** tạo phần đầu ở 360×640; **Xuất video** dựng thành phẩm 1080×1920. Tải MP4/ASS/SRT ở bảng xuất hoặc mở bản dựng cạnh trình phát.
+7. **Dựng thử** tạo đoạn xem thử ở 360×640. Trong **Xuất video**, giữ mặc định một tệp hoặc bật **Xuất theo phần** và chọn số phần. Các MP4/SRT/ASS lưu trong thư mục dự án và có liên kết tải về máy.
 
 Thời lượng đặt là **mục tiêu tối đa đã bao gồm hook**. AI cắt theo câu chuyện nên kết quả có thể ngắn hơn, không thêm phần ngoài số yêu cầu, không lặp/đóng băng hình để lấp thời gian. Nguồn quá ngắn hoặc lời dài hơn cảnh sẽ báo lỗi thay vì cắt mất lời.
 
@@ -249,7 +246,7 @@ Tiêu đề câu chuyện, bật/tắt và mốc hook, cùng danh sách mốc ch
 
 Ở lần nâng cấp đầu tiên, ứng dụng lấy cấu hình từ dự án được cập nhật gần nhất. Sau đó chỉ thao tác lưu của người dùng cập nhật cấu hình chung; kết quả do AI tự tạo không trở thành mặc định cho các video khác.
 
-Đổi chế độ, số phần, thời lượng, ngôn ngữ, hook hoặc quy tắc sẽ yêu cầu phân tích lại trước khi xuất/tạo giọng cho bản chọn cảnh mới. Dự án cũ vẫn xem được; chọn chế độ ở tab Đầu ra trước khi chạy mới. Phân tích lại thay lời dẫn hiện tại, nên sao lưu nếu cần giữ bản cũ.
+Đổi chế độ biên tập, thời lượng, ngôn ngữ, hook hoặc quy tắc sẽ yêu cầu phân tích lại trước khi xuất/tạo giọng. Đổi **Xuất theo phần** hoặc số phần chỉ thay cách chia tệp lúc render, không làm kịch bản AI cũ mất hiệu lực. Dự án dùng chế độ biên kịch nhiều phần cũ được chuyển sang mục tiêu một video và cần phân tích lại một lần; bản xuất cũ vẫn tải được.
 
 ### Dịch vụ giọng đọc
 
@@ -311,7 +308,7 @@ Khi AI chọn quá nhiều cảnh, hệ thống tìm tổ hợp các cảnh di�
 
 Trong Đầu ra, thời lượng mục tiêu và Mức tối thiểu được gom cùng một nhóm. Đổi số phút mục tiêu giữ nguyên tỷ lệ tối thiểu và tự tính số phút tối thiểu; đổi tỷ lệ cập nhật số phút ngay. Nhập trực tiếp **Thời lượng tối thiểu (phút)** sẽ tính ngược tỷ lệ, trong khoảng 60–100%. Ví dụ mục tiêu 5 phút và tối thiểu 4 phút tương đương 80%; đổi mục tiêu sang 3 phút giữ 80% và tối thiểu thành 2,4 phút.
 
-Khoảng `mm:ss–mm:ss` dùng cùng công thức backend, tính cả hook. Khi nguồn ngắn hơn mục tiêu hoặc chia nhiều phần, mức tối thiểu tính theo nguồn khả dụng mỗi phần và có giải thích trên UI. Mục tiêu 0 vẫn là chế độ lấy thời lượng nguồn, không đổi thành một giá trị cố định khi lưu. Các ô vẫn cho xóa trắng trong lúc nhập; rời ô trống giữ giá trị trước đó. Đây là khoảng người dùng yêu cầu, không phải dự đoán kịch bản AI chắc chắn sẽ đạt; thay đổi yêu cầu cần phân tích lại.
+Khoảng `mm:ss–mm:ss` dùng cùng công thức backend, tính cả hook. Khi nguồn ngắn hơn mục tiêu, mức tối thiểu tính theo nguồn khả dụng và có giải thích trên UI. Mục tiêu 0 vẫn là chế độ lấy thời lượng nguồn, không đổi thành một giá trị cố định khi lưu. Các ô vẫn cho xóa trắng trong lúc nhập; rời ô trống giữ giá trị trước đó. Đây là khoảng người dùng yêu cầu, không phải dự đoán kịch bản AI chắc chắn sẽ đạt; thay đổi yêu cầu cần phân tích lại.
 
 ### Workflow plan-first / duration-first
 
@@ -319,7 +316,7 @@ Dự án mới dùng **Lập kế hoạch trước · ưu tiên duration**. Dự
 
 Luồng mới: hiểu nguồn → chọn cảnh và thoại gốc (chưa viết lời) → kiểm tra từng phần → lưu lịch khóa → viết lời theo lịch → tạo giọng → kiểm định → FFmpeg xuất video. Không thêm Remotion. Mặc định mỗi phần đạt 90–100% thời lượng yêu cầu (10 phút tương ứng 9–10 phút), có thể chỉnh mức tối thiểu; nhập 0 lấy thời lượng nguồn. Nếu nguồn không đủ, mức tối thiểu được giới hạn theo lượng nguồn khả dụng.
 
-`duration_plan` có trạng thái `planned` rồi `ready`, fingerprint đầu vào, lịch hình và các slot. Lịch được lưu trước khi viết lời để retry phần lời có thể dùng lại lịch. TTS/render kiểm tra manifest ready, hình học, mốc và thời lượng narration; không cho bỏ qua manifest của dự án mới. Các đoạn thoại gốc đã chọn được giữ nguyên, không tự chọn lại ở bước viết lời. Hỗ trợ một video hoặc nhiều phần.
+`duration_plan` có trạng thái `planned` rồi `ready`, fingerprint đầu vào, lịch hình và các slot. Lịch được lưu trước khi viết lời để retry phần lời có thể dùng lại lịch. TTS/render kiểm tra manifest ready, hình học, mốc và thời lượng narration; không cho bỏ qua manifest của dự án mới. Các đoạn thoại gốc đã chọn được giữ nguyên, không tự chọn lại ở bước viết lời. Video hoàn chỉnh có thể xuất thành một hoặc nhiều tệp bằng nhau.
 
 Với workflow mới, nhịp audio chỉ được căn thêm ±5% quanh tốc độ đã chọn. VieNeu áp tốc độ qua FFmpeg vì SDK không có tham số speed; OmniVoice nhận speed trực tiếp. Audio ngoài ngưỡng đi vào vòng sửa câu, không kéo giọng 0,5–1,5× như đường legacy. VieNeu v3 Turbo dùng temperature 0,8 thống nhất theo khuyến nghị model; giọng mẫu/preset không thay đổi giữa các đoạn. Điều này không bảo đảm cảm xúc giống hệt nhau: vẫn cần nghe duyệt đoạn mẫu và bản cuối.
 

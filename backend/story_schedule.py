@@ -398,7 +398,9 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
                           'hook premise, moral, wrap-up, CTA or timestamp citations. Normally two '
                           'connected sentences; keep natural pace and the fixed min_words..max_words '
                           'when possible. Do not invent guilt, motives or results. Cite no time in text. '
-                          'The clip times are scheduling metadata, not spoken content.\n'+REACTION_RULE
+                          'The clip times are scheduling metadata, not spoken content. '
+                          f'The requested setting is {project["settings"].get("reaction_commentary_count", 5)} '
+                          'commentary points; the locked slots below are the evidence-feasible count.\n'+REACTION_RULE
                           +'\nREPAIR GENERATION: '+str(checkpoint['generation'])
                           +'\nREQUESTED SLOTS: '+json.dumps(pending,ensure_ascii=False)
                           +'\nACCEPTED IMMUTABLE LINES: '+json.dumps(accepted,ensure_ascii=False)

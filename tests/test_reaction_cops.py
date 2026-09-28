@@ -13,7 +13,8 @@ from backend.voice_repair import source_evidence
 def fixture():
     settings = Settings(output_mode='single', summary_seconds=30, duration_min_ratio=.6,
                         production_workflow='plan_first', narration_style='storytelling',
-                        editorial_mode='reaction_cops', original_dialogue_ratio=.5).model_dump()
+                        editorial_mode='reaction_cops', original_dialogue_ratio=.5,
+                        reaction_commentary_count=2).model_dump()
     cues = [dict(id=str(i), start=i*10.0, end=(i+1)*10.0, text=f'Scene exchange {i}',
                  speaker='original', words=[]) for i in range(3)]
     roles = [dict(cue=i, start=c['start'], end=c['end'], text=c['text'], role='participant',
@@ -172,6 +173,7 @@ def test_reaction_plan_first_pipeline_keeps_hook_off_and_only_eligible_cues(monk
     from backend import providers, store
     from backend.reaction_cops import plan_reaction
     project, _ = fixture()
+    project['settings']['reaction_commentary_count']=5
     project.update(id='reaction-test',source='fixture.mp4',summary='Unverified narrator claim',
                    scenes=[],hooks=[],exports=[],preview_exports=[],warnings=[])
     project['settings']['provider']='openai'
@@ -196,15 +198,20 @@ def test_reaction_plan_first_pipeline_keeps_hook_off_and_only_eligible_cues(monk
                                    'reason':'confirmed exchange','priority':.8,'source_cue_ids':[str(i)],
                                    'keep_original':i==1} for i in range(3)]}
         if schema.__name__=='ScheduledNarration':
-            return {'items':[{'id':str(i),'text':' '.join(['diễn biến']*36)} for i in (0,2)]}
+            rows=json.loads(prompt.split('\nREQUESTED SLOTS: ',1)[1].split('\nACCEPTED',1)[0])
+            return {'items':[{'id':row['id'],'text':' '.join(['diễn biến']*36)} for row in rows]}
         raise AssertionError(schema.__name__)
     monkeypatch.setattr(providers,'ask_ai',fake_ai)
     result=plan_reaction(project,lambda *_:None,lambda:None)
     assert result['story_plan']['hook']['end']==0
     assert result['settings']['hook_enabled'] is False
-    assert len(result['narrations'])==2
+    assert len(result['narrations'])==3
     assert result['duration_plan']['status']=='ready'
     assert len(plan_calls)==2
+    assert 'Request 5 distinct commentary points' in next(p for name,p in seen if name=='ReactionFootagePlan')
+    assert result['duration_plan']['reaction_budget']['requested_commentary_count']==5
+    assert result['duration_plan']['reaction_budget']['actual_commentary_count']==3
+    assert any('3/5 commentary points' in warning for warning in result['warnings'])
     assert 'Unverified narrator claim' not in next(p for name,p in seen if name=='ReactionFootagePlan')
     assert 'Unverified narrator claim' not in next(p for name,p in seen if name=='ScheduledNarration')
 
@@ -222,7 +229,7 @@ def test_long_source_planner_catalog_is_bounded_and_spans_source():
 def _many_clean_cues(count, requested=240):
     project,_=fixture()
     project['settings'].update(summary_seconds=requested, duration_min_ratio=.9,
-                               original_dialogue_ratio=.7)
+                               original_dialogue_ratio=.7, reaction_commentary_count=5)
     cues=[dict(id=str(i), start=round(i*2.1, 3), end=round(i*2.1+2, 3),
                text=f'Confirmed in-scene exchange {i}', source_cue_ids=[str(i)], priority=.8)
           for i in range(count)]
@@ -385,3 +392,45 @@ def test_token_limited_planner_uses_verified_full_source(monkeypatch,tmp_path):
     assert result['duration_plan']['reaction_budget']['effective_seconds']<240
     assert result['duration_plan']['status']=='ready'
     assert any('tự điều chỉnh' in warning for warning in result['warnings'])
+
+
+@pytest.mark.parametrize('requested', [1, 2, 5, 10])
+def test_commentary_setting_controls_full_source_repair(requested):
+    project = _many_clean_cues(120)
+    project['settings']['reaction_commentary_count'] = requested
+    blocks = _clean_footage(project)
+    hook = dict(start=0,end=0,title='',reason='Hook off',original_audio=False,narration='')
+    budget = _effective_duration(project,blocks,hook)
+    project['reaction_duration_budget'] = budget
+    plan = validate_plan(_fill_from_full_source(project,_short_ai_draft(),blocks,hook,budget),
+                         project,check_text=False)
+    commentary = [s for s in plan['selections'] if s['narration']]
+    assert len(commentary) == requested
+    assert commentary[-1]['start'] > plan['selections'][-1]['start']*.65
+
+
+def test_commentary_setting_rejects_out_of_range_and_invalidates_only_reaction_plan():
+    from backend.story import plan_fingerprint
+    for value in (0, 11):
+        with pytest.raises(ValueError):
+            Settings(editorial_mode='reaction_cops',reaction_commentary_count=value)
+    project,_ = fixture()
+    project.update(source='fixture.mp4',scenes=[],summary='')
+    before = plan_fingerprint(project)
+    project['settings']['reaction_commentary_count'] = 3
+    assert plan_fingerprint(project) != before
+    after = plan_fingerprint(project)
+    project['settings']['original_dialogue_ratio'] = .9
+    assert plan_fingerprint(project) == after
+
+
+def test_commentary_setting_allows_evidence_limited_shortfall():
+    project,_ = fixture()
+    project['settings']['reaction_commentary_count'] = 10
+    blocks = _clean_footage(project)
+    hook = dict(start=0,end=0,title='',reason='Hook off',original_audio=False,narration='')
+    budget = _effective_duration(project,blocks,hook)
+    project['reaction_duration_budget'] = budget
+    plan = validate_plan(_fill_from_full_source(project,_short_ai_draft(),blocks,hook,budget),
+                         project,check_text=False)
+    assert sum(bool(s['narration']) for s in plan['selections']) == len(blocks) < 10

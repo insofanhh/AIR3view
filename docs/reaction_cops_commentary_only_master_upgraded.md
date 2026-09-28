@@ -1,7 +1,10 @@
-# Reaction COPS — Master Prompt v2 — Chỉ COMMENTARY
+# Reaction COPS — Master Prompt v3 — Chỉ COMMENTARY
 
 Nạp file này bằng nút Master Prompt… trong workspace Reaction Commentary,
 phương thức Web Chat. Ngôn ngữ recap lấy từ TARGET_LANGUAGE trên tool.
+Trong AIR3view, TARGET_COMMENTARY_COUNT lấy từ setting “Số commentary” của
+Reaction COPS (1–10, mặc định 5). Đây là mục tiêu biên tập, không phải lý do
+để thêm lời bình thiếu chứng cứ. Chế độ kể chuyện thường vẫn dùng tỷ lệ thoại gốc.
 Giữ nguyên bốn marker bên dưới khi chỉnh nội dung.
 
 [CLIPFORGE:SRT_OPTIMIZATION]
@@ -138,10 +141,14 @@ CHỌN DIỄN BIẾN THEO CHƯƠNG CÂU CHUYỆN
 - Các point hợp lại phải giữ được xương sống của toàn bộ câu chuyện theo đúng
   thứ tự. “Bao quát toàn bộ” nghĩa là không bỏ chương quyết định, không có nghĩa
   là chọn mọi phút, mọi câu lệnh hoặc mọi thao tác thủ tục.
-- Mặc định chọn 3–6 COMMENTARY point cho một câu chuyện có cấu trúc rõ. Video
-  dài hoặc có nhiều pha độc lập có thể dùng 7–8 point. Chỉ vượt 8 khi nếu gộp
-  thêm sẽ làm mất một mắt xích nhân quả riêng biệt; không dùng quá 10 point.
-  Giới hạn maxItems của schema là trần kỹ thuật, không phải chỉ tiêu cần lấp đầy.
+- Nhắm TARGET_COMMENTARY_COUNT điểm COMMENTARY đã chọn trong AIR3view, từ 1
+  đến 10. Phân bố chúng theo các bước ngoặt có chứng cứ trên toàn câu chuyện;
+  chọn điểm cuối ở diễn biến hiện trường cuối đã xác minh. Nếu nguồn chỉ có ít
+  hơn từng ấy bước ngoặt IN_SCENE riêng biệt, dùng số lượng thấp hơn và báo
+  thiếu; không tách một ý thành nhiều point, bịa nội dung hoặc dùng lời dẫn
+  nguồn để lấp đủ setting. Với 1 point, chọn diễn biến quyết định có căn cứ;
+  với nhiều point, giữ các chương nhân quả quan trọng theo thứ tự.
+  Giới hạn maxItems của schema vẫn là trần kỹ thuật, không phải chỉ tiêu cần lấp đầy.
 - Ưu tiên một point đủ giàu thông tin để nối được 2–3 chi tiết cùng phục vụ một
   câu hỏi điều tra. Không xé một chương thành nhiều block nhỏ chỉ vì có nhiều cue.
 - Giữ mắt xích phản bác hoặc giới hạn làm thay đổi cách hiểu về một bên. Không
@@ -270,6 +277,10 @@ BÁM BẰNG CHỨNG
   Nội dung editorial_thesis, event_map và metadata không được đọc vào lời host.
 - Nếu thiếu bằng chứng IN_SCENE, dùng status=not_enough_evidence theo contract,
   không cố dùng narration hoặc point yếu để đủ block.
+- So số point hợp lệ với TARGET_COMMENTARY_COUNT trước khi trả. Nếu ít hơn mục
+  tiêu nhưng vẫn có bằng chứng IN_SCENE, chỉ trả các point có căn cứ với
+  status=ok; AIR3view tự so số lượng và báo thiếu. Không dùng
+  status=not_enough_evidence chỉ vì chưa đủ số điểm đã đặt và không thêm field.
 - Trước khi trả, chạy NARRATION EXCLUSION AUDIT trên từng selected point:
   tự hỏi nếu xóa toàn bộ lời video creator nói với khán giả khỏi timeline thì
   point này có còn tồn tại và còn đủ căn cứ chỉ từ IN_SCENE hay không. Nếu

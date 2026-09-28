@@ -80,10 +80,13 @@ class Settings(Model):
     hook_enabled: bool = False
     hook_start: float = Field(default=0, ge=0)
     hook_end: float = Field(default=5, gt=0)
-    # None preserves historical timelines until the user selects an output mode.
+    # Editorial planning always makes one complete video. Splitting is an
+    # independent export choice applied after that timeline is finalized.
     output_mode: Literal['single', 'parts'] | None = None
     summary_seconds: float = Field(default=180, ge=0, le=1800)
     part_count: int = Field(default=3, ge=1, le=100)
+    export_mode: Literal['single', 'parts'] = 'single'
+    export_part_count: int = Field(default=2, ge=2, le=100)
     opening_delay: float = Field(default=3, ge=0, le=15)
     part_seconds: float = Field(default=60, ge=10, le=1800)
     split_mode: Literal['exact', 'natural'] = 'natural'
@@ -104,6 +107,7 @@ class Settings(Model):
     narration_style: Literal['highlights', 'storytelling'] = 'highlights'
     editorial_mode: Literal['standard', 'reaction_cops'] = 'standard'
     original_dialogue_ratio: float = Field(default=.15, ge=.1, le=1)
+    reaction_commentary_count: int = Field(default=5, ge=1, le=10)
     analysis_workflow: Literal['efficient', 'detailed'] = 'efficient'
     production_workflow: Literal['plan_first', 'legacy'] = 'legacy'
     duration_min_ratio: float = Field(default=.9, ge=.6, le=1)

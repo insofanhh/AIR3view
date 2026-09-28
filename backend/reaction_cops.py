@@ -15,14 +15,15 @@ from pydantic import Field
 from .models import Model, StoryAnswer
 
 
-VERSION = 3
+VERSION = 4
 NOT_ENOUGH = 'not_enough_evidence: Không đủ hội thoại hiện trường đã xác minh để viết Reaction COPS. Không dùng lời dẫn hậu kỳ hoặc câu lẫn vai trò để bù.'
-RULE = '''REACTION COPS COMMENTARY ONLY v1. No spoken intro or outro, greeting,
+RULE = '''REACTION COPS COMMENTARY ONLY v2. No spoken intro or outro, greeting,
 teaser, whole-case opening summary, moral/lesson, closing question or CTA.
 Every host line is a commentary point attached to a specific confirmed IN_SCENE
 cue. Calm, incisive, natural commentary; usually two connected sentences per
 point, concise enough for its actual footage/TTS duration. Cover the causal
-turns in order, normally 3-6 points (at most 10), without filler or repeating
+turns in order, using the requested commentary count when enough distinct
+verified developments exist (at most 10), without filler or repeating
 the real dialogue. Select phase changes, checks that do not yet settle a question,
 and an unresolved issue's immediate evidenced consequences. Link 2-3 concrete
 details into one causal point instead of describing each frame. For English,
@@ -323,18 +324,17 @@ def _fill_from_full_source(project, draft, blocks, hook, budget):
     selected.sort(key=lambda x: x['start'])
     if not selected:
         raise ValueError(NOT_ENOUGH)
-    # Commentary is attached to evidenced turns, not computed from the audio
-    # percentage. Keeping it at the chapter anchors prevents an un-commented
-    # ending when a high original-dialogue percentage was requested.
-    desired_commentary = min(6, max(1, round(used/45)), len(selected))
-    if used >= 120 and len(selected) >= 3:
-        desired_commentary = max(3, desired_commentary)
+    # Commentary count is an editorial setting, independent of original-audio
+    # share. A source with fewer distinct clean blocks cannot be padded.
+    desired_commentary = min(project['settings'].get('reaction_commentary_count', 5), len(selected))
     indexed = {id(block): i for i,block in enumerate(selected)}
     anchor_indices = sorted({indexed[id(blocks[i])] for i in chapter_anchors.values()
                              if id(blocks[i]) in indexed})
     if not anchor_indices:
         anchor_indices = [0]
-    if len(anchor_indices) > desired_commentary:
+    if desired_commentary == 1:
+        commentary = {anchor_indices[-1]}
+    elif len(anchor_indices) > desired_commentary:
         # Reserve opening and last chapter, then distribute middle turns.
         positions = {0, len(anchor_indices)-1}
         for k in range(1, desired_commentary-1):
@@ -400,8 +400,9 @@ def validate_audio_roles(result, project, check_text=True):
             voiced += 1
             if commentary_violation(item['narration']):
                 raise ValueError('COMMENTARY chứa lời mở/kết, mốc thời gian hoặc metadata không được đọc.')
-    if not 1 <= voiced <= 10:
-        raise ValueError('Reaction COPS cần 1–10 commentary points có chứng cứ hiện trường.')
+    maximum = project['settings'].get('reaction_commentary_count', 5)
+    if not 1 <= voiced <= maximum:
+        raise ValueError(f'Reaction COPS cần 1–{maximum} commentary points có chứng cứ hiện trường.')
     validate_retention(result, project)
 
 
@@ -441,8 +442,8 @@ def validate_plan(raw, project, *, check_text=True):
         raise ValueError('Kế hoạch chưa có cảnh cho đủ số phần.')
     if sum(totals.values()) >= 120:
         commentary = [x for x in selected if x['narration'].strip()]
-        if len(commentary) < 3:
-            raise ValueError('Reaction COPS cần ít nhất ba bước ngoặt có lời bình cho video dài.')
+        if not commentary:
+            raise ValueError('Reaction COPS cần ít nhất một commentary point có chứng cứ hiện trường.')
         if commentary[-1]['start'] < selected[0]['start'] + .65 * (selected[-1]['end']-selected[0]['start']):
             raise ValueError('Điểm COMMENTARY cuối dồn quá sớm; cần giải thích diễn biến cuối đã xác minh.')
         clean = _clean_footage(project)
@@ -484,10 +485,7 @@ def plan_reaction(project, report, check):
         raise ValueError('Hook đã bật nhưng không có cảnh 3–7 giây chứa xung đột, phản ứng hoặc tiếng thật hiện trường đã xác minh. Hãy tắt hook hoặc dùng nguồn khác.')
     hook = selected_hook or dict(start=0,end=0,title='',reason='Hook tắt',original_audio=False,narration='')
     count,target = output_budget(settings,candidate['metadata']['duration'])
-    ratio=settings.get('original_dialogue_ratio',.15)
-    ratio_rule=(f'Original in-scene audio is a SOFT TARGET near {ratio:.0%} of output, '
-                'preferably within 7 percentage points when clean dialogue exists. '
-                'Do not sacrifice a turning point, the final chapter or natural commentary to hit it. ')
+    desired_commentary = settings.get('reaction_commentary_count', 5)
     catalog = [{**{k:c[k] for k in ('id','start','end','text')},'priority':r['priority']}
                for c,r in zip(candidate['reaction_cues'],candidate['source_speech']['items'])
                if r['role']=='participant' and r['confidence']>=.7]
@@ -515,14 +513,15 @@ def plan_reaction(project, report, check):
               'source_cue_ids fully inside its time range. For keep_original=true, the entire range '
               'must contain only eligible on-scene speech, never source narration. For commentary, '
               'reserve preferably 11–16 seconds per English point when the source permits; '
-              'other languages follow natural pacing, with 3–16 seconds per point. Normally '
-              '3–6 points across the edit and never >10. Every selection range must be clean: '
+              'other languages follow natural pacing, with 3–16 seconds per point. '
+              f'Request {desired_commentary} distinct commentary points across the whole edit. '
+              'If clean evidence cannot support that many, use fewer and never add filler. '
+              'Every selection range must be clean: '
               'NO source narration, mixed-role or uncertain cue may overlap it. '
               'Set section=development for EVERY selection: no intro/outro, no lesson, no '
               'creator voice-over outcome. Last confirmed event only if evidenced in-scene. '
               f'Exactly {count} parts; requested {target:g}s per part is a preference, '
               f'effective source-feasible target {budget["effective_seconds"]:.1f}s per part including hook in part 1; '
-              + ratio_rule +
               'No repeated body footage or invented events. Cover the opening, each evidenced '
               'phase change, and the last verified development.\n' + RULE + '\n'
               + duration_planning_instructions(candidate)
@@ -576,8 +575,8 @@ def plan_reaction(project, report, check):
                  'outcome':draft['last_confirmed_event'],'lesson':'No spoken lesson in Reaction COPS.',
                  'hook':hook,'selections':rows}
             try:
-                if not 1 <= sum(bool(x['narration']) for x in rows) <= 10:
-                    raise ValueError('Cần 1–10 commentary points; thường 3–6.')
+                if sum(bool(x['narration']) for x in rows) != desired_commentary:
+                    raise ValueError(f'Cần {desired_commentary} commentary points khi nguồn sạch cho phép.')
                 locked=validate_plan(raw,candidate,check_text=False)
                 break
             except ValueError as exc:
@@ -599,11 +598,11 @@ def plan_reaction(project, report, check):
     actual_seconds = (hook['end']-hook['start'] +
                       sum(x['end']-x['start'] for x in result['selections'])) / count
     measured_retention = retention_budget(result,candidate)
-    deviation = abs(measured_retention['actual_ratio']-ratio)
-    if deviation > .10:
+    actual_commentary = sum(bool(x['narration'].strip()) for x in result['selections'])
+    if actual_commentary < desired_commentary:
         candidate.setdefault('warnings', []).append(
-            f'Reaction COPS: tiếng gốc thực tế {measured_retention["actual_ratio"]:.1%}, '
-            f'mục tiêu mềm {ratio:.0%}; ưu tiên các bước ngoặt có chứng cứ và thời lượng khả thi.')
+            f'Reaction COPS: có {actual_commentary}/{desired_commentary} commentary points; '
+            'không đủ diễn biến hiện trường sạch, riêng biệt để thêm điểm bình luận.')
     elapsed = hook['end']-hook['start']
     commentary_positions = []
     for selection in result['selections']:
@@ -635,9 +634,9 @@ def plan_reaction(project, report, check):
                      title_language=settings['language'],exports=[],preview_exports=[])
     candidate['duration_plan']={**duration_plan_manifest(result,candidate),'status':'ready',
         'reaction_budget': {**budget, 'actual_seconds': round(actual_seconds, 3),
-                            'requested_original_ratio':ratio,
                             'actual_original_ratio':round(measured_retention['actual_ratio'],4),
-                            'ratio_deviation':round(deviation,4),
+                            'requested_commentary_count':desired_commentary,
+                            'actual_commentary_count':actual_commentary,
                             'commentary_positions':commentary_positions,
                             'covered_chapters':covered_chapters,
                             'evidenced_chapters':[event['chapter'] for event in event_map]},

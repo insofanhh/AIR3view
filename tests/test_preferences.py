@@ -12,6 +12,7 @@ SHARED_EXAMPLE = {
     # Output
     'output_mode': 'parts', 'summary_seconds': 240, 'part_count': 4,
     'part_seconds': 75, 'split_mode': 'exact', 'opening_delay': 6,
+    'export_mode': 'parts', 'export_part_count': 2,
     # Layout
     'background': '#123456', 'background_mode': 'color', 'layout_preset': 'classic',
     'fit': 'contain', 'crop_x': 42, 'crop_y': 58, 'title_size': 44,
@@ -52,7 +53,8 @@ def test_user_save_promotes_shared_fields_and_apply_preserves_source_fields(clie
     target = store.create('Target', {'kind': 'upload', 'file': 'source.mp4'})
     target['settings'].update(
         title='Keep target title', hook_enabled=True, hook_start=12, hook_end=18,
-        part_durations=[31, 47], language='German'
+        part_durations=[31, 47], export_mode='parts', export_part_count=5,
+        language='German'
     )
     target['exports'] = [{'file': 'old.mp4'}]
     target['preview_exports'] = [{'file': 'preview.mp4'}]
@@ -72,12 +74,18 @@ def test_user_save_promotes_shared_fields_and_apply_preserves_source_fields(clie
     result = applied.json()
     assert result['revision'] == target['revision'] + 1
     for key, value in SHARED_EXAMPLE.items():
+        if key in {'output_mode', 'part_count', 'part_seconds', 'split_mode',
+                   'export_mode', 'export_part_count'}:
+            continue
         assert result['settings'][key] == value
+    assert result['settings']['output_mode'] == 'single'
     assert result['settings']['title'] == 'Keep target title'
     assert result['settings']['hook_enabled'] is True
     assert result['settings']['hook_start'] == 12
     assert result['settings']['hook_end'] == 18
     assert result['settings']['part_durations'] == [31, 47]
+    assert result['settings']['export_mode'] == 'parts'
+    assert result['settings']['export_part_count'] == 5
     assert result['exports'] == []
     assert result['preview_exports'] == []
 
@@ -100,7 +108,11 @@ def test_new_projects_inherit_defaults_but_background_saves_do_not_promote(clien
 
     created = store.create('New', {'kind': 'upload', 'file': 'source.mp4'})
     for key, value in SHARED_EXAMPLE.items():
+        if key in {'output_mode', 'part_count', 'part_seconds', 'split_mode',
+                   'export_mode', 'export_part_count'}:
+            continue
         assert created['settings'][key] == value
+    assert created['settings']['output_mode'] == 'single'
     assert created['settings']['title'] == ''
     assert created['settings']['hook_start'] == 0
     assert created['settings']['part_durations'] == []

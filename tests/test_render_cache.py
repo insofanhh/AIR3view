@@ -134,6 +134,30 @@ def test_preview_is_limited_to_fifteen_seconds_at_cursor():
     assert render_cache.preview_part(timeline,51)['index']==2
 
 
+def test_export_parts_split_completed_timeline_on_frames():
+    parts=render_cache.export_parts(121/30,dict(export_mode='parts',export_part_count=2))
+    assert [(p['start'],p['end']) for p in parts] == [(0,2),(2,121/30)]
+    assert max(p['duration'] for p in parts)-min(p['duration'] for p in parts)<=1/30+.0001
+    assert render_cache.export_parts(121/30,dict(export_mode='single',export_part_count=99)) == [
+        dict(index=1,start=0,end=121/30,duration=121/30)]
+    with pytest.raises(ValueError,match='mỗi phần'):
+        render_cache.export_parts(2.0,dict(export_mode='parts',export_part_count=3))
+
+
+def test_split_export_writes_independent_video_audio_and_subtitles(media_project):
+    p,_=media_project
+    p['settings'].update(export_mode='parts',export_part_count=2)
+    render.render(p,lambda *_:None,lambda:None)
+    assert len(p['exports'])==2
+    assert [x['part'] for x in p['exports']]==[1,2]
+    assert sum(x['duration'] for x in p['exports'])==pytest.approx(12,abs=.08)
+    assert abs(p['exports'][0]['duration']-p['exports'][1]['duration'])<.08
+    for item in p['exports']:
+        assert probe(store.asset(p['id'],item['file']))['has_audio']
+        assert store.asset(p['id'],item['srt']).is_file()
+        assert store.asset(p['id'],item['ass']).is_file()
+
+
 def test_scene_boundaries_are_preserved_instead_of_forcing_decode_resets():
     t=dict(clips=[dict(end=x) for x in (5,24,43,62,85,100)])
     rows=render_cache.chunks(t,dict(index=1,start=0,end=100,duration=100))

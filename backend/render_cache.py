@@ -22,6 +22,20 @@ VISUAL_SETTINGS = ('background','background_mode','fit','crop_x','crop_y','layou
 def ticks(seconds):return round(seconds*30)
 
 
+def export_parts(duration, settings):
+    """Split a finished timeline evenly on frame boundaries, after planning."""
+    frames = ticks(duration)
+    if frames <= 0:
+        raise ValueError('Chưa có video hoàn chỉnh để xuất.')
+    count = settings.get('export_part_count', 2) if settings.get('export_mode') == 'parts' else 1
+    if count > 1 and frames < count * 30:
+        raise ValueError('Video hoàn chỉnh quá ngắn cho số phần đã chọn; mỗi phần cần ít nhất 1 giây.')
+    boundaries = [round(i * frames / count) for i in range(count + 1)]
+    return [dict(index=i + 1, start=boundaries[i] / 30, end=boundaries[i + 1] / 30,
+                 duration=(boundaries[i + 1] - boundaries[i]) / 30)
+            for i in range(count)]
+
+
 def file_identity(path):
     path=Path(path)
     stat=path.stat()
@@ -173,7 +187,11 @@ def render_cached(project,report,check,preview=False,preview_start=0):
     from . import render as renderer
     timeline=build(project,strict=True)
     if not timeline['clips']:raise ValueError('Chưa có video để xuất.')
-    parts=[preview_part(timeline,preview_start)] if preview else timeline['parts']
+    if preview:
+        parts=[preview_part(timeline,preview_start)]
+    else:
+        parts=export_parts(timeline['duration'],project['settings'])
+        timeline={**timeline,'parts':parts}
     width=360 if preview else 1080
     root=store.project_dir(project['id'])
     cache=root/'render-cache';cache.mkdir(exist_ok=True)
