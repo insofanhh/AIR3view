@@ -19,9 +19,11 @@ def main():
     assert (root / 'tools' / 'codex.exe').is_file()
     assert (root / 'APP_VERSION').is_file()
     from backend import vieneu
+    from backend.media import filter_complex_file_option
     from backend.vieneu_onnx_files import install_sdk_fetch_hook
 
     assert vieneu.status()['ok'], 'VieNeu SDK missing from installer'
+    assert filter_complex_file_option(str(root / 'tools' / 'ffmpeg.exe')) in ('-/filter_complex', '-filter_complex_script')
     with tempfile.TemporaryDirectory() as data:
         install_sdk_fetch_hook(Path(data))
         render = Path(data) / 'encoder-test.mp4'

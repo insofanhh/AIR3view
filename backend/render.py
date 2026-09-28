@@ -3,7 +3,7 @@ import os
 import subprocess
 from PIL import ImageFont
 from . import store
-from .media import FFMPEG, run, probe, NO_WINDOW
+from .media import FFMPEG, run, probe, NO_WINDOW, filter_complex_file_args
 from .timeline import slice_clips
 
 _NVENC = None
@@ -325,7 +325,7 @@ def render_part(project, timeline, part, folder, check, width=1080, *, video_onl
     graph.write_text(';\n'.join(filters), 'utf-8')
     output = folder / (name + '.mp4')
     temporary = folder / (name + '.tmp.mp4')
-    args += ['-filter_complex_threads', str(min(4,os.cpu_count() or 1)), '-filter_complex_script', graph.name, '-map', '[outv]']
+    args += ['-filter_complex_threads', str(min(4,os.cpu_count() or 1)), *filter_complex_file_args(graph.name), '-map', '[outv]']
     args += ['-an'] if video_only else ['-map','[outa]']
     args += ['-t', f'{part["duration"]:.6f}', '-r', '30']
     suffix=['-threads',str(min(8,os.cpu_count() or 1)),* ([] if video_only else ['-c:a','aac','-b:a','192k']),'-movflags','+faststart',str(temporary)]

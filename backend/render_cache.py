@@ -10,7 +10,7 @@ import av
 from . import store
 from .providers import digest
 from .timeline import build, slice_clips
-from .media import FFMPEG, probe, NO_WINDOW, Cancelled
+from .media import FFMPEG, probe, NO_WINDOW, Cancelled, filter_complex_file_args
 from .render_progress import run_progress
 
 VERSION = 1
@@ -158,7 +158,7 @@ def mix_audio(project,timeline,part,folder,check,progress):
     filters.append(''.join(mixed)+f'amix=inputs={len(mixed)}:duration=first:normalize=0,alimiter=limit=0.95:latency=1,apad,atrim=end_sample={round(part["duration"]*48000)}[outa]')
     graph=folder/'audio.filters.txt';graph.write_text(';\n'.join(filters),'utf-8')
     temporary=folder/'mix.tmp.wav'
-    args+=['-filter_complex_threads','2','-filter_complex_script',str(graph),'-map','[outa]','-vn','-c:a','pcm_s16le','-ar','48000','-ac','2',str(temporary)]
+    args+=['-filter_complex_threads','2',*filter_complex_file_args(graph),'-map','[outa]','-vn','-c:a','pcm_s16le','-ar','48000','-ac','2',str(temporary)]
     run_progress(args,folder,check,part['duration'],progress)
     if abs(probe(temporary)['duration']-part['duration'])>.001:raise ValueError('Audio cache chưa đúng số mẫu theo lịch dựng.')
     check();temporary.replace(folder/'mix.wav')

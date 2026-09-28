@@ -6,7 +6,9 @@ import re
 import shutil
 import subprocess
 import time
+import tempfile
 import xml.etree.ElementTree as ET
+from functools import lru_cache
 from pathlib import Path
 import av
 from . import store
@@ -18,6 +20,36 @@ SOURCE_SUBTITLES_VERSION = 2
 
 class Cancelled(Exception):
     pass
+
+
+@lru_cache(maxsize=8)
+def filter_complex_file_option(ffmpeg=FFMPEG):
+    """Choose the file-backed filter option supported by this FFmpeg binary.
+
+    FFmpeg 9 removed -filter_complex_script; older builds may lack the
+    replacement -/filter_complex. Exercise the option rather than parsing a
+    version string, because installed and bundled builds can differ.
+    """
+    with tempfile.TemporaryDirectory(prefix='air3view-ffmpeg-') as directory:
+        graph = Path(directory) / 'probe.filters.txt'
+        graph.write_text('anullsrc=r=8000:cl=mono,atrim=duration=0.02[outa]', encoding='utf-8')
+        for option in ('-/filter_complex', '-filter_complex_script'):
+            try:
+                result = subprocess.run(
+                    [str(ffmpeg), '-hide_banner', '-loglevel', 'error', option, str(graph),
+                     '-map', '[outa]', '-f', 'null', '-'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                    timeout=10, creationflags=NO_WINDOW,
+                )
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if result.returncode == 0:
+                return option
+    raise RuntimeError('FFmpeg hiện tại không đọc được filter graph từ file. Hãy cài bản FFmpeg đầy đủ hoặc cập nhật AIR3view.')
+
+
+def filter_complex_file_args(graph, ffmpeg=FFMPEG):
+    return [filter_complex_file_option(str(ffmpeg)), str(graph)]
 
 
 def run(args, cwd=None, check_cancel=lambda: None, timeout=7200):
