@@ -96,6 +96,8 @@ Chọn giọng có sẵn trong **Giọng**, mặc định **Minh Quân**, hoặc
 
 Model chạy trong tiến trình Python riêng, nạp một lần và tái sử dụng cho các đoạn tiếp theo. Hủy/timeout/lỗi sẽ dừng tiến trình; lần thử lại nạp lại model và giữ các đoạn audio đã hoàn thành. Log tại `data/vieneu-sdk.log`. Audio từ adapter Studio cũ được tạo lại theo cache SDK mới; nhịp đọc và vòng sửa thời lượng vẫn dùng chính sách của AIR3view.
 
+Trên CPU/ONNX, AIR3view tự chuẩn bị bản sao thực của các file graph và dữ liệu ONNX trong `data/models/vieneu-onnx` trước khi nạp model. Việc này tránh lỗi `External data path escapes model directory` khi cache Hugging Face chứa các liên kết tới những blob khác nhau. File đã tải trong cache được dùng lại; nếu lần chuẩn bị trước bị ngắt, lần sau chỉ hoàn tất file còn thiếu. Bước đầu cần thêm dung lượng đĩa cho các file model đã sao chép, nhưng không xóa cache hay dữ liệu dự án.
+
 Kiểm tra tải model, giọng preset và clone bằng ba câu thử, không cần API key:
 
 ```powershell

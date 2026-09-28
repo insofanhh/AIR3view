@@ -27,7 +27,7 @@ def installed_version() -> str:
         version = VERSION_FILE.read_text(encoding='utf-8').strip()
     except OSError:
         version = ''
-    return version if version_tuple(version) is not None else '0.1.1'
+    return version if version_tuple(version) is not None else '0.1.2'
 
 
 def _published_release(data: dict, current: str) -> dict:

@@ -27,6 +27,10 @@ def load_model(device):
     if version('vieneu') != SDK_VERSION:
         raise RuntimeError(f'Cần vieneu=={SDK_VERSION}; chạy lại cài đặt requirements.txt.')
     resolved, warning = select_device(device)
+    if resolved == 'cpu':
+        from . import store
+        from .vieneu_onnx_files import install_sdk_fetch_hook
+        install_sdk_fetch_hook(store.DATA)
     from vieneu import Vieneu
     tts = Vieneu(mode='v3turbo', backbone_repo=MODEL, device=resolved,
                  backend='onnx' if resolved == 'cpu' else 'pytorch', precision='fp32', max_batch_size=4)
