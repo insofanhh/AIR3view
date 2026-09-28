@@ -1,0 +1,58 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Install build tools
+        shell: pwsh
+        run: |
+          choco install ffmpeg innosetup -y --no-progress
+          python -m pip install --disable-pip-version-check Pillow==12.1.0 pytest==9.1.1
+      - name: Test launcher
+        shell: pwsh
+        run: python -m pytest -q tests/test_installer_launcher.py
+      - name: Build and smoke-test installer
+        shell: pwsh
+        env:
+          AIR3VIEW_REF_TYPE: ${{ github.ref_type }}
+          AIR3VIEW_REF_NAME: ${{ github.ref_name }}
+        run: |
+          $version = if ($env:AIR3VIEW_REF_TYPE -eq 'tag') { $env:AIR3VIEW_REF_NAME.TrimStart('v') } else { '0.1.0-dev' }
+          .\installer\Build-Windows.ps1 -Version $version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AIR3view-Windows-Installer
+          path: build/windows/release/AIR3view-Setup-*.exe
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AIR3VIEW_TAG: ${{ github.ref_name }}
+        run: |
+          $installer = (Get-ChildItem build/windows/release/AIR3view-Setup-*.exe -File | Select-Object -First 1).FullName
+          gh release create $env:AIR3VIEW_TAG $installer --generate-notes --verify-tag

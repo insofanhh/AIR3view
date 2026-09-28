@@ -1,6 +1,7 @@
 .venv/
 node_modules/
 frontend/dist/
+build/
 data/
 __pycache__/
 .pytest_cache/

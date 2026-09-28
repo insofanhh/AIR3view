@@ -2,6 +2,14 @@
 
 Ứng dụng chạy trên máy để biến video YouTube hoặc file local thành video review dọc **1080 × 1920, 30 fps**. Backend Python/FastAPI, giao diện React/TypeScript, dựng bằng FFmpeg; AI phân tích qua Codex CLI hoặc OpenAI API, giọng đọc qua thư viện VieNeu-TTS v3 Turbo tích hợp (mặc định) hoặc OmniVoice riêng.
 
+## Cài bằng file EXE trên Windows
+
+Tải `AIR3view-Setup-*-win64.exe` từ [GitHub Releases](https://github.com/insofanhh/AIR3view/releases), chạy bộ cài và mở AIR3view bằng shortcut Desktop hoặc Start Menu. Bản cài dành cho Windows 10/11 64-bit, đã chứa Python, thư viện backend, giao diện, FFmpeg, Deno và Codex CLI. Không cần clone repository, cài Node/Python hay chạy script setup. Nếu chưa có Release, bản build thử có thể tải ở mục **Actions → Windows installer → Artifacts** sau khi workflow chạy; GitHub yêu cầu đăng nhập để tải artifact.
+
+Ứng dụng mở giao diện trong trình duyệt tại `http://127.0.0.1:8765/`; biểu tượng ở khay hệ thống có lệnh mở lại và thoát. Dự án, bản xuất và log nằm trong `%LOCALAPPDATA%\AIR3view\data`, được giữ khi cập nhật hoặc gỡ ứng dụng. Có thể đặt `AIR3VIEW_DATA` trước khi mở để dùng thư mục dữ liệu khác. VieNeu và faster-whisper tải model khi dùng lần đầu nên vẫn cần Internet lúc đó. Nếu chọn Codex, mở shortcut **Đăng nhập Codex** trong Start Menu một lần; nếu chọn OpenAI/Gemini, nhập API key trong tab Kết nối. OmniVoice là dịch vụ tùy chọn riêng, không nằm trong bản cài.
+
+Để tự tạo bộ cài từ mã nguồn trên Windows, xem [installer/Build-Windows.ps1](installer/Build-Windows.ps1) và [thành phần đóng gói](installer/THIRD_PARTY.md). Workflow `.github/workflows/windows-installer.yml` kiểm tra bản đóng gói, tạo artifact khi chạy thủ công và đính kèm EXE vào Release khi push tag `v*`. Các hướng dẫn dưới đây dành cho người phát triển chạy trực tiếp từ mã nguồn.
+
 ## Tính năng
 
 - **Một video hoàn chỉnh:** AI chọn cảnh từ toàn bộ nguồn và giữ diễn biến chính. Tại bước xuất, có thể giữ một tệp hoặc chia đều bản dựng hoàn chỉnh thành nhiều phần mà không lập lại kịch bản.
