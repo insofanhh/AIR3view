@@ -4,6 +4,7 @@ from bisect import bisect_left,bisect_right
 TICKS=30
 MIN_AI=3*TICKS
 MAX_AI=16*TICKS
+MAX_CONSECUTIVE_AI=24*TICKS
 
 
 def local_options(item,candidates):
@@ -67,9 +68,10 @@ def choose_windows(selections,candidates,maximum):
         for used,score,chosen,tail in states.values():
             for amount,quality,windows,head,last in local:
                 total=used+amount
-                if total>maximum or tail+head>MAX_AI:continue
-                value=(total,score+quality,chosen+windows,last)
-                key=(round(total/15),last)
+                next_tail = tail + last if not windows else last
+                if total>maximum or tail+head>MAX_CONSECUTIVE_AI:continue
+                value=(total,score+quality,chosen+windows,next_tail)
+                key=(round(total/15),next_tail)
                 if key not in next_states or value[1]>next_states[key][1]:next_states[key]=value
         if not next_states:
             raise ValueError('STORY_STRUCTURE: Ngân sách thoại gốc chưa đủ cho các cảnh đã chọn và các bridge xen kẽ. Cần chọn lại cảnh.')

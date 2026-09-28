@@ -26,6 +26,8 @@ def active(project):
 
 
 def cues(project):
+    if project['settings'].get('editorial_mode') == 'reaction_cops':
+        return project.get('reaction_cues') or project.get('source_transcript') or project.get('transcript', [])
     return project.get('source_transcript') or project.get('transcript', [])
 
 
@@ -69,8 +71,9 @@ def classify(project, ask_ai, folder, report, check):
     from .providers import digest
     rows = [dict(cue=i, start=c['start'], end=c['end'], text=c['text']) for i,c in enumerate(cues(project))]
     from .hook_policy import VERSION as HOOK_VERSION
-    identity = dict(version=VERSION, hook_version=HOOK_VERSION, source=project.get('source'), rows=rows,
-                    scenes=project.get('scenes', []), summary=project.get('summary', ''),
+    reaction = project['settings'].get('editorial_mode') == 'reaction_cops'
+    identity = dict(version=VERSION, hook_version=HOOK_VERSION, reaction=reaction, source=project.get('source'), rows=rows,
+                    scenes=[] if reaction else project.get('scenes', []), summary='' if reaction else project.get('summary', ''),
                     provider=project['settings']['provider'], model=project['settings']['model'],
                     has_audio=project['metadata'].get('has_audio', True))
     fingerprint = digest(identity)
@@ -87,26 +90,35 @@ def classify(project, ask_ai, folder, report, check):
     classified = []
     if not project['metadata'].get('has_audio', True):
         rows = []
-    for offset in range(0, len(rows), 80):
+    batch_size = 32 if project['settings'].get('provider') == 'openai' else 80
+    for offset in range(0, len(rows), batch_size):
         check()
-        batch = rows[offset:offset+80]
+        batch = rows[offset:offset+batch_size]
         ids = {c['cue'] for c in batch}
         path = cache / f'{fingerprint}-{offset}.json'
-        prompt = ('SOURCE SPEAKER ROLES v1. Classify EVERY requested cue exactly once. '
+        nearby_scenes = [] if reaction else [s for s in project.get('scenes', [])
+                      if s.get('end', 0) >= batch[0]['start'] - 5 and s.get('start', 0) <= batch[-1]['end'] + 5]
+        scene_context = [{k: (str(s[k])[:240] if k in ('description', 'evidence') else s[k])
+                          for k in ('start', 'end', 'description', 'evidence') if k in s}
+                         for s in nearby_scenes[:12]]
+        prompt = ('SOURCE SPEAKER ROLES v2. Classify EVERY requested cue exactly once. '
                   'participant = actual people involved speaking in the situation, interviews, phone calls, '
                   'dispatch, spontaneous reactions. Commentary = external presenter/editorial voice-over, '
                   'recap narrator (human OR AI), ads. A quoted line read by a narrator remains commentary. '
-                  'For mixed participant/commentary in one cue or insufficient evidence use unknown. '
+                  'For mixed participant/commentary in one cue or insufficient evidence use unknown; exclude the entire mixed cue. '
                   'Use surrounding turns and scene evidence, not first-person wording or voice timbre alone. '
                   'Give confidence, importance to the actual story (priority), and concrete role evidence. '
                   'Also score hook_score for a strong original-audio opening: real conflict, urgency, shouting, '
                   'screams explicitly evidenced in the transcript, or a decisive spontaneous reaction. '
                   'Do not infer audible screams from a still image. Normal exposition and all commentary score 0. '
                   'Sources with very little dialogue can still contain valuable real exchanges: inspect each cue. '
-                  'Do not invent speakers or force any percentage.\n'+RULE+
-                  '\nSUMMARY: '+project.get('summary', '')+
-                  '\nSCENES: '+json.dumps(project.get('scenes', []), ensure_ascii=False)+
-                  '\nCONTEXT: '+json.dumps(rows[max(0,offset-6):offset+86], ensure_ascii=False)+
+                  'Do not invent speakers or force any percentage.\n'+
+                  ('REACTION COPS: classify independently of any source summary. SOURCE_NARRATION is excluded '
+                   'everywhere, including opening, middle and ending; mixed cues are unknown. '
+                   'Do not treat source narrator claims as verified facts.' if reaction else RULE)+
+                  '\nSUMMARY: '+('' if reaction else project.get('summary', '')[:2000])+
+                  '\nSCENES: '+json.dumps(scene_context, ensure_ascii=False)+
+                  '\nCONTEXT: '+json.dumps(rows[max(0,offset-4):offset+batch_size+4], ensure_ascii=False)+
                   '\nREQUESTED CUES: '+json.dumps(batch, ensure_ascii=False))
         report(85, f'Phân biệt hội thoại thật và lời bình nguồn · {offset+1}–{offset+len(batch)}/{len(rows)}…')
         answer = None

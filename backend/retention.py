@@ -65,11 +65,18 @@ def budget(plan,project):
                 effective_seconds=round(feasible,3),actual_seconds=round(actual,3),
                 actual_ratio=actual/total if total else 0,ai_planned_ratio=1-actual/total if total else 0,
                 shortfall_seconds=round(max(0,requested-feasible),3),structural_reserve_seconds=structural_reserve,
-                source_shortfall_seconds=round(max(0,requested-available),3),tolerance_seconds=max(1,total*TOLERANCE))
+                source_shortfall_seconds=round(max(0,requested-available),3),
+                # Allow a half-second cue-boundary rounding margin on top of
+                # the percentage tolerance, without changing the target.
+                tolerance_seconds=max(1,total*TOLERANCE)+.5)
 
 
 def validate(plan,project):
     if project.get('retention_policy_version')!=VERSION:return
+    if project['settings'].get('editorial_mode')=='reaction_cops':
+        # Reaction COPS retains commentary on evidenced turning points even
+        # when the requested original-audio share cannot be reached exactly.
+        return
     b=budget(plan,project)
     # 10–50% remains a ceiling for backward-compatible plans. Above 50% the
     # user explicitly asks the planner to replace AI narration with source

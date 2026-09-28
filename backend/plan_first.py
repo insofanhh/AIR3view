@@ -26,6 +26,55 @@ class FootagePlan(Model):
     selections: list[Footage] = Field(min_length=3, max_length=500)
 
 
+_OPENAI_PLANNER_RULE = (
+    'Planner rules: Use only verified source evidence. Preserve the real sequence, '
+    'opening, key developments and confirmed ending; mark unknown outcomes as unknown. '
+    'Do not infer motive, identity, guilt or continuous action from a still frame. '
+    'Source narration, creator commentary, ads and AI voice-over are NOT real dialogue; '
+    'replace their useful verified context with AIR3view narration later. '
+    'Keep genuine participant exchanges and spontaneous reactions audible only when '
+    'the complete cue fits the selected clip. Never repeat footage except a hook. '
+    'For a hook, prefer 3–7s of verified in-scene drama '
+    'with source audio; otherwise reserve a 4–7s AI-voiced situation hook. '
+    'Never place timestamps or citations in spoken text. '
+    'For source-led edits, alternate coherent real exchanges with short AI bridges; '
+    'each AI bridge is 3–8s and no chain of adjacent AI bridges exceeds 24s. '
+    'retain the actual outcome and stay within the exact duration and audio budgets.'
+)
+
+
+def _spread(items, count):
+    """Keep source beginning and ending while sampling the entire chronology."""
+    if len(items) <= count:
+        return items
+    indexes = {round(i * (len(items) - 1) / (count - 1)) for i in range(count)}
+    return [items[i] for i in sorted(indexes)]
+
+
+def _openai_plan_context(project):
+    """Bound planner context; full evidence and speech roles stay in the project."""
+    scenes = sorted(project.get('scenes', []), key=lambda row: row.get('start', 0))
+    transcript = project.get('source_transcript') or project.get('transcript', [])
+    roles = project.get('source_speech', {}).get('items', [])
+    real = [row for row in roles if row.get('role') == 'participant' and row.get('confidence', 0) >= .7]
+    real_count = 24 if project['settings'].get('original_dialogue_ratio', .15) > .5 else 16
+
+    def compact(row, fields, lengths):
+        return {key: str(row[key])[:lengths[key]] if key in lengths else row[key]
+                for key in fields if key in row}
+
+    return {
+        'summary': project.get('summary', '')[:900],
+        'scenes': [compact(row, ('start', 'end', 'description', 'evidence', 'confidence'),
+                           {'description': 120, 'evidence': 70})
+                   for row in _spread(scenes, 12)],
+        'transcript': [compact(row, ('start', 'end', 'text'), {'text': 80})
+                       for row in _spread(transcript, 8)],
+        'real_speech': [compact(row, ('cue', 'start', 'end', 'text', 'priority'), {'text': 80})
+                        for row in _spread(real, real_count)],
+    }
+
+
 def geometry(plan):
     return {'hook': {k: plan['hook'][k] for k in ('start', 'end')} | ({'original_audio':False} if not plan['hook'].get('original_audio',True) else {}),
             'selections': [{k: x[k] for k in ('id','start','end','part','section','narration_offset')}
@@ -45,8 +94,23 @@ def lock_schedule(raw, project, report):
     if not source_led(project):
         for index in (0,len(normalized['selections'])-1):
             normalized['selections'][index]['narration']='Plan pending.'
-    from .source_speech import active, anchor
+    from .source_speech import active, anchor, allowed
     if active(project):
+        from .story import source_led
+        if (source_led(project)
+                and any(not item['narration'].strip() for item in normalized['selections'])
+                and all(item['narration'].strip() or allowed(project,item['start'],item['end'])
+                        for item in normalized['selections'])):
+            try:
+                # A fully verified plan already specifies which complete
+                # exchanges to retain. Keep those exact clips instead of
+                # running the dialogue selector a second time.
+                return validate_plan(schedule(normalized,project,locked_roles=True),
+                                     project,check_text=False)
+            except ValueError:
+                # The normal selector can still rescue a plan whose source
+                # ratio or bridge geometry needs reallocation.
+                pass
         # Rebuild all audio roles from classified cues, including model-marked
         # narration intervals. This cannot silently lose sparse real dialogue.
         try:
@@ -148,6 +212,7 @@ def plan_first(project, report, check):
             pass
     if locked is None:
         count, target = output_budget(settings,project['metadata']['duration'])
+        bounded = _openai_plan_context(project) if settings.get('provider') == 'openai' else None
         dialogue_mode = ('Choose genuine dialogue first, then plan footage around it. For the selected target above 50%, '
                          'original dialogue is a measured TARGET and AI narration fills the remainder. '
                          if settings.get('original_dialogue_ratio',.15)>.5 else
@@ -156,6 +221,7 @@ def plan_first(project, report, check):
                      'Keep short AI context and resolution bridges, alternating with real original exchanges. '
                      'Write AI only for necessary missing context, transitions or source-commentary replacement. '
                      'Every AI bridge must be one or two concise sentences, alternating with retained real exchanges; never write a long paragraph over a dialogue-heavy span. '
+                     'Never select more than 24s of consecutive AI-only footage; choose verified real speech between bridge groups. '
                      'Reserve short 4–8s AI bridges for opening, development and ending, before filling the remaining time with real dialogue. '
                      'At 95–100%, original exchanges may carry context and resolution themselves; never omit the actual known outcome. Keep the AI-hook fallback when no genuine hook exists. '
                      if settings.get('original_dialogue_ratio',.15)>.5 else
@@ -179,22 +245,31 @@ def plan_first(project, report, check):
                   f'Title and editorial notes language: {settings["language"]}. '
                   f'Original dialogue maximum: {settings.get("original_dialogue_ratio",.15):.0%}.\n'
                   +duration_planning_instructions(project)+'\nRULES: '+json.dumps({k:settings[k] for k in ('draft_rule','review_rule','summary_rule')},ensure_ascii=False)
-                  +'\nSUMMARY: '+project.get('summary','')+'\nSCENES: '+json.dumps(project.get('scenes',[]),ensure_ascii=False)
-                  +'\nTRANSCRIPT: '+json.dumps(project.get('source_transcript') or project.get('transcript',[]),ensure_ascii=False))
-        prompt += '\n'+RULE+'\n'+HOOK_RULE
+                  +'\nSUMMARY: '+(bounded['summary'] if bounded else project.get('summary',''))
+                  +'\nSCENES: '+json.dumps(bounded['scenes'] if bounded else project.get('scenes',[]),ensure_ascii=False)
+                  +'\nTRANSCRIPT: '+json.dumps(bounded['transcript'] if bounded else project.get('source_transcript') or project.get('transcript',[]),ensure_ascii=False))
+        prompt += '\n'+(_OPENAI_PLANNER_RULE if bounded else RULE+'\n'+HOOK_RULE)
         prompt += ('\nFIXED ORIGINAL-AUDIO HOOK: '+json.dumps(selected_hook,ensure_ascii=False)+
                    '\nUse these exact hook start/end values; include its duration in the budget. Never mute it. '
                    'The body dialogue budget is the remainder after this hook; do not force repeating the same exchange.' if selected_hook else
                    '\nNO QUALIFIED ORIGINAL-AUDIO HOOK. Select 4–7s of meaningful moving footage for an AI hook. '
                    'Set original_audio=false; final hook narration will be written after the timing is locked.')
-        prompt += '\nCLASSIFIED SOURCE SPEECH (only confident participant cues may retain audio): '+json.dumps(project['source_speech']['items'],ensure_ascii=False)
+        prompt += '\nCLASSIFIED SOURCE SPEECH (only confident participant cues may retain audio): '+json.dumps(bounded['real_speech'] if bounded else project['source_speech']['items'],ensure_ascii=False)
         prompt += ('\nRESERVED REAL EXCHANGE: '+json.dumps(reserved,ensure_ascii=False)+
                    '\nInclude this complete cue in development. Keep >=4s of narration before/after it '
                    'within a larger selection, or use a separate exact cue selection between narrated scenes. '
                    'Other real exchanges are optional within the cap; the original-audio hook takes priority.' if reserved else
                    '\nNo reservable real exchange. Do not substitute source commentary. Use AIR3view narration when no genuine hook is available.')
         prompt += retention_instructions(project)
-        if settings.get('original_dialogue_ratio',.15)>.5:prompt += '\n'+BRIDGE_RULE
+        if bounded and settings.get('original_dialogue_ratio', .15) > .5:
+            prompt += ('\nFor keep_original=true, use the EXACT start/end of a complete verified '
+                       'PRIORITY RESERVATION PROPOSAL range above whenever possible. '
+                       'Never extend such a range across commentary or unknown speech. '
+                       f'Use the proposal ranges as the {settings.get("original_dialogue_ratio", .15):.0%} audio foundation; place 3–8s '
+                       'AI bridge clips in the chronological gaps, with no AI chain over 24s. '
+                       'Opening and ending need short AI clips. Select enough footage to meet '
+                       'the full requested duration without padding or repeating source.')
+        if settings.get('original_dialogue_ratio',.15)>.5 and not bounded:prompt += '\n'+BRIDGE_RULE
         feedback = ''
         for attempt in range(3):
             check()
@@ -205,6 +280,18 @@ def plan_first(project, report, check):
                 feedback='\nFIX SCHEMA: '+str(exc)[:1600]
                 if attempt==2: raise
                 continue
+            if bounded and settings.get('original_dialogue_ratio', .15) > .5:
+                from .source_speech import allowed
+                invalid_original = [(x['start'], x['end']) for x in draft['selections']
+                                    if x['keep_original'] and not allowed(project, x['start'], x['end'])]
+                if invalid_original:
+                    feedback = ('\nINVALID ORIGINAL AUDIO RANGES: '+json.dumps(invalid_original[:12])+
+                                '. These ranges include commentary/unknown speech or cut a real cue. '
+                                'Replace them with exact complete PRIORITY RESERVATION PROPOSAL ranges; '
+                                'move AI bridge footage into the intervening gaps. Return the full corrected plan.')
+                    if attempt == 2:
+                        raise ValueError('AI chọn thoại gốc chồng lời bình/không trọn cue sau 3 lượt; '+feedback[:500])
+                    continue
             selection_rows=[]
             for x in draft['selections']:
                 row={k:v for k,v in x.items() if k != 'keep_original'}

@@ -52,10 +52,10 @@ VisionEvidence = EvidenceAnswer
 ReviewEvidence = EvidenceAnswer
 
 _VERSION = 2  # Source speech policy: re-read evidence under editorial/dialogue distinction.
-_TRANSCRIPT_LIMIT = 60000
+_TRANSCRIPT_LIMIT = 6000
 _MAX_IMAGES = 36
-_MAX_IMAGES_PER_CALL = 18
-_VISION_BATCH_VERSION = 3
+_MAX_IMAGES_PER_CALL = 6
+_VISION_BATCH_VERSION = 4
 
 
 def _json_hash(value: Any) -> str:
@@ -125,6 +125,13 @@ def _transcript_chunks(cues: list[dict], limit: int = _TRANSCRIPT_LIMIT) -> list
     if current:
         chunks.append(current)
     return chunks
+
+
+def _spread(items: list[dict], limit: int) -> list[dict]:
+    if len(items) <= limit:
+        return items
+    indexes = {round(i * (len(items) - 1) / (limit - 1)) for i in range(limit)}
+    return [items[i] for i in sorted(indexes)]
 
 
 def _atomic_json(path: Path, value: Any) -> None:
@@ -529,6 +536,7 @@ DỮ LIỆU: {json.dumps(payload, ensure_ascii=False)}'''
 def analyze_efficient(project: dict, report, check):
     """Run transcript-first evidence, then one whole-source story plan."""
     from . import media, store
+    from .providers import OpenAIRequestTooLarge, OpenAIOutputIncomplete
     folder = store.project_dir(project['id'])
     settings = project['settings']
     metadata = project.get('metadata') or {}
@@ -576,43 +584,70 @@ def analyze_efficient(project: dict, report, check):
     stage_summaries: list[str] = []
     chunks = _transcript_chunks(cues)
     if chunks:
-        total = len(chunks)
-        for index, chunk in enumerate(chunks):
+        index = 0
+        while index < len(chunks):
+            chunk = chunks[index]
             check()
             start, end = float(chunk[0]['start']), min(duration, max(float(c['end']) for c in chunk))
             payload_hash = _json_hash(chunk)
             key = _json_hash({'version': _VERSION, 'stage': 'transcript', 'source': identity,
                               'chunk': payload_hash, 'provider': settings.get('provider'), 'model': settings.get('model')})
             prompt = _evidence_prompt('transcript', chunk, start, end, settings)
-            report(10 + 30 * index / max(1, total), f'Đọc transcript {index + 1}/{total}…')
-            result = _call_evidence(prompt, [], settings, folder, check, cache, key, start, end, duration, stats)
+            report(10 + 30 * index / max(1, len(chunks)), f'Đọc transcript {index + 1}/{len(chunks)}…')
+            try:
+                result = _call_evidence(prompt, [], settings, folder, check, cache, key, start, end, duration, stats)
+            except (OpenAIRequestTooLarge, OpenAIOutputIncomplete) as exc:
+                if isinstance(exc, OpenAIOutputIncomplete) and exc.reason != 'max_output_tokens':
+                    raise
+                if len(chunk) < 2:
+                    raise
+                midpoint = len(chunk) // 2
+                chunks[index:index + 1] = [chunk[:midpoint], chunk[midpoint:]]
+                continue
             transcript_scenes.extend(result['scenes'])
             uncertainties.extend(result['uncertainties'])
             if result.get('summary'):
                 stage_summaries.append(result['summary'])
+            index += 1
     else:
         report(10, 'Nguồn không có transcript; tăng coverage hình ảnh…')
 
     selected = _select_frames(project, folder, uncertainties, cues)
     vision_scenes: list[dict] = []
     batches = _image_batches(selected)
-    batch_ranges = _batch_ranges(batches, duration)
-    for index, batch in enumerate(batches):
+    index = 0
+    while index < len(batches):
+        batch = batches[index]
         check()
-        start, end = batch_ranges[index]
-        payload = {'transcript_evidence': _clip_evidence_ranges(transcript_scenes, start, end),
+        start, end = _batch_ranges(batches, duration)[index]
+        context_evidence = _clip_evidence_ranges(transcript_scenes, start, end)
+        if settings.get('provider') == 'openai':
+            context_evidence = [{**scene, 'description': scene['description'][:180],
+                                 'evidence': scene['evidence'][:120]}
+                                for scene in _spread(context_evidence, 12)]
+        payload = {'transcript_evidence': context_evidence,
                    'frames': [_frame_digest(folder, f) for f in batch]}
         images = [folder / str(f['file']) for f in batch]
         prompt = _evidence_prompt('vision', payload, start, end, settings, [f['time'] for f in batch], _image_manifest(batch))
         key = _vision_cache_key(identity, transcript_hash, payload['transcript_evidence'],
                                 payload['frames'], settings.get('provider'), settings.get('model'), start, end, prompt)
         report(42 + 28 * index / max(1, len(batches)), f'Kiểm tra hình ảnh {index + 1}/{len(batches)}…')
-        result = _call_evidence(prompt, images, settings, folder, check, cache, key, start, end, duration, stats,
-                                [float(f['time']) for f in batch])
+        try:
+            result = _call_evidence(prompt, images, settings, folder, check, cache, key, start, end, duration, stats,
+                                    [float(f['time']) for f in batch])
+        except (OpenAIRequestTooLarge, OpenAIOutputIncomplete) as exc:
+            if isinstance(exc, OpenAIOutputIncomplete) and exc.reason != 'max_output_tokens':
+                raise
+            if len(batch) < 2:
+                raise
+            midpoint = len(batch) // 2
+            batches[index:index + 1] = [batch[:midpoint], batch[midpoint:]]
+            continue
         vision_scenes.extend(result['scenes'])
         uncertainties.extend(result['uncertainties'])
         if result.get('summary'):
             stage_summaries.append(result['summary'])
+        index += 1
 
     all_scenes = transcript_scenes + vision_scenes
     low_confidence = any(float(s.get('confidence', 1)) < .55 for s in all_scenes) or bool(uncertainties)
@@ -621,22 +656,50 @@ def analyze_efficient(project: dict, report, check):
         targets = [f for f in selected if any(abs(float(f['time']) - (u['start'] + u['end']) / 2) < 12 for u in uncertainties)] or selected[:_MAX_IMAGES_PER_CALL]
         targets = _limit_frames(targets, _MAX_IMAGES_PER_CALL)
         start, end = 0.0, duration
-        payload = {'scenes': all_scenes, 'uncertainties': uncertainties, 'frame_times': [f['time'] for f in targets]}
-        prompt = _evidence_prompt('compact review', payload, start, end, settings, [f['time'] for f in targets], _image_manifest(targets)) + '\nChỉ sửa các quan sát chưa rõ. Giữ nguyên mốc của quan sát cần sửa; giữ bằng chứng đoạn kết. Point có trong dữ liệu đã được xác minh trước đó. Không thêm sự kiện mới.\nQuy tắc kiểm tra: ' + settings.get('review_rule', '')
-        key = _json_hash({'version': _VERSION, 'stage': 'review', 'source': identity,
-                          'contract': _VISION_BATCH_VERSION, 'schema': _EVIDENCE_SCHEMA_HASH,
-                          'prompt': _json_hash(prompt), 'interval': [start, end],
-                          'evidence': _json_hash(payload), 'review_rule': settings.get('review_rule', ''),
-                          'frames': [_frame_digest(folder, f) for f in targets],
-                          'provider': settings.get('provider'), 'model': settings.get('model')})
-        result = _call_evidence(prompt, [folder / str(f['file']) for f in targets], settings, folder, check, cache, key, start, end, duration, stats,
-                                     [float(f['time']) for f in targets] + [s['start'] for s in all_scenes if s.get('point')])
+        review_scenes = all_scenes
+        review_uncertainties = uncertainties
+        if settings.get('provider') == 'openai':
+            review_scenes = [{**scene, 'description': scene['description'][:180],
+                              'evidence': scene['evidence'][:120]}
+                             for scene in _spread(all_scenes, 16)]
+            review_uncertainties = _spread(uncertainties, 12)
+        while True:
+            payload = {'scenes': review_scenes, 'uncertainties': review_uncertainties,
+                       'frame_times': [f['time'] for f in targets]}
+            prompt = _evidence_prompt('compact review', payload, start, end, settings, [f['time'] for f in targets], _image_manifest(targets)) + '\nChỉ sửa các quan sát chưa rõ. Giữ nguyên mốc của quan sát cần sửa; giữ bằng chứng đoạn kết. Point có trong dữ liệu đã được xác minh trước đó. Không thêm sự kiện mới.\nQuy tắc kiểm tra: ' + settings.get('review_rule', '')
+            key = _json_hash({'version': _VERSION, 'stage': 'review', 'source': identity,
+                              'contract': _VISION_BATCH_VERSION, 'schema': _EVIDENCE_SCHEMA_HASH,
+                              'prompt': _json_hash(prompt), 'interval': [start, end],
+                              'evidence': _json_hash(payload), 'review_rule': settings.get('review_rule', ''),
+                              'frames': [_frame_digest(folder, f) for f in targets],
+                              'provider': settings.get('provider'), 'model': settings.get('model')})
+            try:
+                result = _call_evidence(prompt, [folder / str(f['file']) for f in targets], settings, folder, check, cache, key, start, end, duration, stats,
+                                        [float(f['time']) for f in targets] + [s['start'] for s in all_scenes if s.get('point')])
+                break
+            except (OpenAIRequestTooLarge, OpenAIOutputIncomplete) as exc:
+                if isinstance(exc, OpenAIOutputIncomplete) and exc.reason != 'max_output_tokens':
+                    raise
+                if len(targets) > 1:
+                    targets = _limit_frames(targets, max(1, len(targets) // 2))
+                    continue
+                project.setdefault('warnings', []).append(
+                    'Bỏ qua kiểm tra bổ sung vì giới hạn token OpenAI; evidence đã xác minh trước đó vẫn được giữ.')
+                result = {'scenes': [], 'uncertainties': review_uncertainties}
+                break
         if result['scenes']:
             # A compact review must not erase unrelated evidence or the ending.
             merged = {(s['start'], s['end'], s.get('point', False)): s for s in all_scenes}
             merged.update({(s['start'], s['end'], s.get('point', False)): s for s in result['scenes']})
             all_scenes = list(merged.values())
-        uncertainties = result['uncertainties']
+        if settings.get('provider') == 'openai':
+            # A bounded review cannot resolve omitted uncertainties; retain
+            # those from other batches rather than silently dropping them.
+            reviewed = {(u['start'], u['end'], u['reason']) for u in review_uncertainties}
+            uncertainties = [u for u in uncertainties if (u['start'], u['end'], u['reason']) not in reviewed]
+            uncertainties.extend(result['uncertainties'])
+        else:
+            uncertainties = result['uncertainties']
 
     check()
     all_scenes = sorted(all_scenes, key=lambda s: (s['start'], s['end']))

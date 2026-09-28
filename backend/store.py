@@ -37,8 +37,8 @@ def init():
             if 'tts_provider' not in settings:
                 settings['tts_provider'] = 'vieneu'
                 tts_changed = True
-            if 'vieneu_url' not in settings:
-                settings['vieneu_url'] = 'http://localhost:7860'
+            if 'vieneu_device' not in settings:
+                settings['vieneu_device'] = 'cpu'
                 tts_changed = True
             if 'production_workflow' not in settings:
                 settings['production_workflow'] = 'legacy'

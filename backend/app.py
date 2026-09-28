@@ -115,6 +115,8 @@ async def lifespan(app):
     yield
     STOP.set()
     worker.join(timeout=3)
+    from .vieneu import _runtime
+    _runtime.close()
 
 
 app = FastAPI(title='AIR3view Studio', version='0.1.0', lifespan=lifespan)
@@ -201,7 +203,10 @@ def omnivoice_status():
 
 
 @app.get('/api/tts')
-def tts_status(provider: Literal['vieneu', 'omnivoice'] = 'vieneu', url: str = 'http://localhost:7860'):
+def tts_status(provider: Literal['vieneu', 'omnivoice'] = 'vieneu', url: str = 'http://127.0.0.1:8001'):
+    if provider == 'vieneu':
+        from .vieneu import status
+        return status()
     parsed = urlparse(url)
     if parsed.scheme != 'http' or parsed.hostname not in ('localhost', '127.0.0.1') or parsed.username or parsed.password:
         raise ValueError('Dịch vụ giọng đọc phải dùng HTTP localhost.')
@@ -210,7 +215,7 @@ def tts_status(provider: Literal['vieneu', 'omnivoice'] = 'vieneu', url: str = '
         response.raise_for_status()
         config = response.json()
         endpoints = {x.get('api_name') for x in config.get('dependencies', [])}
-        expected = {'wrapper', 'wrapper_1'} if provider == 'vieneu' else {'_clone_fn', '_design_fn'}
+        expected = {'_clone_fn', '_design_fn'}
         return {'ok': expected <= endpoints, 'provider': provider, 'title': config.get('title'),
                 'message': 'Kết nối API; cần nạp model trong dịch vụ trước khi tạo giọng.'}
     except Exception:
@@ -349,8 +354,7 @@ def edit_project(pid: str, body: ProjectEdit):
         if incoming['settings']['voice_reference']:
             store.asset(pid, incoming['settings']['voice_reference'])
         # Limit server-side TTS requests to explicitly configured local services.
-        for label, value in (('VieNeu', incoming['settings']['vieneu_url']),
-                             ('OmniVoice', incoming['settings']['omnivoice_url'])):
+        for label, value in (('OmniVoice', incoming['settings']['omnivoice_url']),):
             tts_url = urlparse(value)
             if tts_url.scheme != 'http' or tts_url.hostname not in ('127.0.0.1', 'localhost'):
                 raise ValueError(f'Bản local chỉ kết nối {label} qua HTTP localhost.')

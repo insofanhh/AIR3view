@@ -178,7 +178,8 @@ def build_story(project, strict=False):
                  part=part,segment_id=identifier,section=section)
         clips.append(c)
         cursor=c['end']
-    append('hook',settings['hook_start'],settings['hook_end'],1,'hook','hook')
+    if plan['hook']['end'] > plan['hook']['start']:
+        append('hook',plan['hook']['start'],plan['hook']['end'],1,'hook','hook')
     for item in plan['selections']:
         append('highlight',item['start'],item['end'],item['part'],item['id'],item['section'])
     for index in sorted(set(c['part'] for c in clips)):
@@ -189,6 +190,11 @@ def build_story(project, strict=False):
     from .source_speech import active, muted_ranges
     excluded = muted_ranges(project) if narrated and active(project) else []
     selections = {x['id']: x for x in plan['selections']}
+    subtitle_rows = project['transcript']
+    if settings.get('editorial_mode') == 'reaction_cops':
+        verified = {i for i,r in enumerate(project.get('source_speech',{}).get('items',[]))
+                    if r['role']=='participant' and r['confidence']>=.7}
+        subtitle_rows = [c for i,c in enumerate(project.get('reaction_cues',[])) if i in verified]
     for clip in clips:
         for left,right in excluded:
             a,b = max(left,clip['source_start']),min(right,clip['source_end'])
@@ -203,7 +209,7 @@ def build_story(project, strict=False):
                 continue
             if project['metadata'].get('has_audio'):
                 original_audio.append({'start': clip['start'], 'end': clip['end']})
-        for cue in project['transcript']:
+        for cue in subtitle_rows:
             a,b=max(cue['start'],clip['source_start']),min(cue['end'],clip['source_end'])
             if b>a:
                 offset=clip['start']-clip['source_start']

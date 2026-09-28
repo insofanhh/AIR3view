@@ -17,6 +17,7 @@ def partition(answer,requested):
 
 def recover(batch,prompt,cached,path,ask_ai,settings,folder,report,check):
     from .source_speech import SpeechRole, SpeechRoles
+    from .providers import OpenAIRequestTooLarge, OpenAIOutputIncomplete
     ids={c['cue'] for c in batch};accepted={};details={};generation=0
     state_dir=path.parent/'recovery';state_dir.mkdir(exist_ok=True)
     state_path=state_dir/path.name
@@ -50,7 +51,8 @@ def recover(batch,prompt,cached,path,ask_ai,settings,folder,report,check):
     calls=0
     # Smaller requests after each round avoid asking for the same 80-item
     # envelope again. With 80 input IDs this is at most 15 calls per run.
-    for round_index,size in enumerate((80,40,20,10)):
+    sizes = (32,16,8,4) if settings.get('provider') == 'openai' else (80,40,20,10)
+    for round_index,size in enumerate(sizes):
         check()
         pending=[c for c in batch if c['cue'] not in accepted]
         if not pending:break
@@ -74,6 +76,15 @@ def recover(batch,prompt,cached,path,ask_ai,settings,folder,report,check):
                 answer=SpeechRoles.model_validate(ask_ai(request,[],settings,folder,check,SpeechRoles))
                 valid,details=partition(answer,requested)
                 accepted.update(valid)
+            except OpenAIRequestTooLarge as exc:
+                # A smaller round keeps all requested IDs and valid prior work.
+                details=dict(missing=sorted(requested),oversized_request=True,
+                             limit=exc.limit,requested_tokens=exc.requested)
+            except OpenAIOutputIncomplete as exc:
+                if exc.reason != 'max_output_tokens':
+                    raise
+                details=dict(missing=sorted(requested),output_incomplete=True,
+                             reason=exc.reason)
             except ValidationError as exc:
                 # Authentication, transport and cancellation errors propagate.
                 details=dict(missing=sorted(requested),duplicates=[],extra=[],

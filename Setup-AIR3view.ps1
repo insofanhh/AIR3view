@@ -20,5 +20,5 @@ npm.cmd --prefix frontend ci
 if ($LASTEXITCODE -ne 0) { throw 'Failed to install frontend dependencies.' }
 npm.cmd --prefix frontend run build
 if ($LASTEXITCODE -ne 0) { throw 'Frontend build failed.' }
-Write-Host 'AIR3view installed. Configure OmniVoice and the AI provider as described in README.md.'
+Write-Host 'AIR3view installed with VieNeu v3 Turbo SDK. Configure the AI provider; OmniVoice is optional. See README.md.'
 Write-Host 'Run Start-AIR3view.ps1 to launch the app.'

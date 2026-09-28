@@ -40,6 +40,7 @@ def test_long_bridge_is_split_before_validation_and_tts():
 @pytest.mark.parametrize('text,count',[
     ('A dispute begins. Officers arrive.',2),
     ('Mr. Lee calls Dr. Smith. The fee was 3.5 dollars.',2),
+    ('Officers chase J.R. away from the car. The pursuit continues toward J.R.\u2019s residence.',2),
     ('争执开始了。警察赶到了。',2),
     ('The driver refuses. An officer asks. The witness answers.',3),
 ])

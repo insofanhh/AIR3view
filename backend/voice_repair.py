@@ -184,6 +184,18 @@ def adaptive_budget(text, measured, target, history):
 def source_evidence(project, narration):
     """Resolve symbolic cue references and nearby evidence for the rewrite."""
     refs = narration.get('evidence','')
+    if project.get('settings',{}).get('editorial_mode') == 'reaction_cops':
+        from .reaction_cops import _evidence_ids
+        cited=set(_evidence_ids(refs))
+        eligible=[]
+        for cue,role in zip(project.get('reaction_cues',[]),
+                            project.get('source_speech',{}).get('items',[])):
+            if cue['id'] in cited and role['role']=='participant' and role['confidence']>=.7:
+                eligible.append({k:cue[k] for k in ('id','start','end','text')})
+        if not eligible or len(eligible)!=len(cited):
+            from .reaction_cops import NOT_ENOUGH
+            raise ValueError(NOT_ENOUGH)
+        return 'IN_SCENE EVIDENCE ONLY: '+json.dumps(eligible,ensure_ascii=False)
     matched=re.search(r'\bc(\d+)\s*(?:to|[-–])\s*c(\d+)\b',refs)
     selected=set()
     if matched:
@@ -236,11 +248,15 @@ def repair_text(text: str, evidence: str, language: str, target: float,
                 measured: float, settings: dict, folder, check, ask_ai,
                 generation: int = 1, max_attempts: int = 2, history=None, measured_trial=False) -> str:
     """Ask the configured AI for one bounded rewrite and validate its shape."""
-    from .source_policy import RULE
+    if settings.get('editorial_mode') == 'reaction_cops':
+        from .reaction_cops import RULE, commentary_violation
+    else:
+        from .source_policy import RULE
+        commentary_violation = lambda _text: None
     if not text.strip() or target <= 0 or measured <= 0:
         raise ValueError("Không thể sửa lời kể thiếu nội dung hoặc thời lượng mục tiêu.")
     adaptive = settings.get('production_workflow') == 'plan_first'
-    short_bridge=adaptive and settings.get('original_dialogue_ratio',.15)>.5
+    short_bridge=adaptive and settings.get('editorial_mode') != 'reaction_cops' and settings.get('original_dialogue_ratio',.15)>.5
     from .story_bridges import concise, sentence_count, RULE as BRIDGE_RULE
     budget = adaptive_budget(text,measured,target,history or []) if adaptive else _budget_for(text,measured,target)
     _, minimum, maximum = budget
@@ -345,6 +361,8 @@ def repair_text(text: str, evidence: str, language: str, target: float,
             estimated_ratio = (units / original_units) * (measured / target)
             if wrong_language(rewritten, language):
                 issue = "Lời kể phải hoàn toàn bằng English."
+            elif commentary_violation(rewritten):
+                issue = 'COMMENTARY không được thêm intro/outro, lời dẫn nguồn hoặc mốc thời gian.'
             elif perspective_drift(text,rewritten):
                 issue='Giữ góc nhìn người dẫn chuyện; không thay lời kể bằng câu hỏi/mệnh lệnh của người trong video.'
             elif short_bridge and not concise(rewritten,language):

@@ -15,7 +15,11 @@ def wrong_language(text, language):
 
 def repair_language(project, report, check):
     from . import providers, store
-    from .source_policy import RULE
+    if project['settings'].get('editorial_mode') == 'reaction_cops':
+        from .reaction_cops import RULE, commentary_violation
+    else:
+        from .source_policy import RULE
+        commentary_violation = lambda _text: None
     from .narration_text import clean_narration
     from .models import TranslationAnswer
     from .story import speech_rate, speech_units
@@ -46,7 +50,7 @@ def repair_language(project, report, check):
         for entry in entries:
             text = mapping.get(entry['id'],'')
             units = speech_units(text)
-            if not text or wrong_language(text,language):
+            if not text or wrong_language(text,language) or commentary_violation(text):
                 issues.append(entry['id']+': must be in English.')
             # Translation can be shorter than the source-language draft. The
             # VieNeu duration fitter measures the real WAV; do not reject a

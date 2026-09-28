@@ -1,12 +1,14 @@
 # AIR3view Studio
 
-Ứng dụng chạy trên máy để biến video YouTube hoặc file local thành video review dọc **1080 × 1920, 30 fps**. Backend Python/FastAPI, giao diện React/TypeScript, dựng bằng FFmpeg; AI phân tích qua Codex CLI hoặc OpenAI API, giọng đọc qua VieNeu-TTS local (mặc định) hoặc OmniVoice riêng.
+Ứng dụng chạy trên máy để biến video YouTube hoặc file local thành video review dọc **1080 × 1920, 30 fps**. Backend Python/FastAPI, giao diện React/TypeScript, dựng bằng FFmpeg; AI phân tích qua Codex CLI hoặc OpenAI API, giọng đọc qua thư viện VieNeu-TTS v3 Turbo tích hợp (mặc định) hoặc OmniVoice riêng.
 
 ## Tính năng
 
 - **Một video tóm tắt:** chọn highlight từ toàn bộ nguồn, ưu tiên diễn biến nhanh, căng thẳng và đối thoại nổi bật có bằng chứng, giữ bối cảnh và kết quả.
 - **Nhiều phần:** đặt số phần và thời lượng mong muốn mỗi phần trước khi chạy.
 - Lời dẫn có **Mở đầu → Diễn biến → Kết thúc**. Mở đầu phát sau hook và một đoạn hình gốc; kết thúc nêu kết quả và bài học.
+- **Reaction COPS** là chế độ riêng trong “Cách xuất video”: tối ưu cue nguồn có ánh xạ, chỉ dùng hội thoại hiện trường đã xác minh để chọn cảnh và viết các điểm COMMENTARY, không tạo intro/outro. Hook mặc định tắt; khi bật chỉ nhận cảnh 3–7 giây có tiếng thật phù hợp, không thay bằng lời hook AI. Nếu thiếu bằng chứng hiện trường, tác vụ báo `not_enough_evidence` thay vì lấy lời dẫn hậu kỳ để bù. Quy tắc gốc: [Reaction COPS master prompt](docs/reaction_cops_commentary_only_master_upgraded.md).
+- Thời lượng nhập trong Reaction COPS là mục tiêu ưu tiên. Bộ lập lịch đo toàn bộ khoảng hội thoại hiện trường sạch, tự bổ sung cảnh nếu cue mẫu AI chọn quá ít, và tự giảm mục tiêu khi nguồn hoặc giới hạn số điểm COMMENTARY không đủ. Dự án lưu thời lượng yêu cầu, mục tiêu khả thi và thời lượng thực tế trong `duration_plan.reaction_budget`; phần cảnh báo nêu rõ chênh lệch đáng kể. Không lặp cảnh, lấy lời dẫn nguồn hoặc đệm im lặng để bù thời gian.
 - Hình tiếp tục chạy khi AI nói; tiếng gốc mặc định tắt trong đoạn AI, bật lại sau đó.
 - Ngôn ngữ đầu ra cho title, lời AI và phụ đề; có tiếng Việt và English.
 - Phụ đề highlight từ đang đọc, chỉnh màu/bật tắt; xuất MP4, ASS và SRT.
@@ -77,9 +79,29 @@ npm.cmd --prefix frontend run build
 
 **Script này không cài OmniVoice, FFmpeg hoặc đăng nhập AI.** Tiếp tục bước 3 và 4. Nếu dùng đường dẫn FFmpeg riêng, đặt `$env:FFMPEG_PATH` trước khi chạy setup/server.
 
-## 3. Cài và chạy VieNeu-TTS hoặc OmniVoice riêng
+## 3. VieNeu v3 Turbo tích hợp và OmniVoice tùy chọn
 
-AIR3view không đóng gói model VieNeu-TTS hoặc OmniVoice. Dùng môi trường Python riêng để tránh xung đột PyTorch/Gradio với backend. Hướng dẫn gốc: [OmniVoice](https://github.com/k2-fsa/OmniVoice).
+`requirements.txt` cài **vieneu==3.7.1**, phiên bản SDK trong [hướng dẫn model VieNeu v3 Turbo](https://huggingface.co/pnnbao-ump/VieNeu-TTS-v3-Turbo). Không cần cài/chạy VieNeu Studio hoặc mở cổng 7860. Mặc định CPU/ONNX, không yêu cầu PyTorch. Model tự tải khi tạo giọng lần đầu vào `data/models/huggingface` (hoặc `HF_HOME` nếu đã đặt), dùng chung giữa các dự án. Model/codec VieNeu theo Apache-2.0; xem giấy phép và attribution tại trang model và [mã nguồn VieNeu](https://github.com/pnnbao97/VieNeu-TTS).
+
+Chọn giọng có sẵn trong **Giọng**, mặc định **Minh Quân**, hoặc audio tham chiếu rõ tiếng 3–8 giây. v3 Turbo không cần chép lời audio mẫu. Ngôn ngữ hỗ trợ ở tích hợp này: Vietnamese và English; ngôn ngữ khác chọn OmniVoice. Tên giọng từ Studio cũ có thể khác: chọn lại từ danh sách, không tự đổi sang người nói khác khi tên không hợp lệ.
+
+Model chạy trong tiến trình Python riêng, nạp một lần và tái sử dụng cho các đoạn tiếp theo. Hủy/timeout/lỗi sẽ dừng tiến trình; lần thử lại nạp lại model và giữ các đoạn audio đã hoàn thành. Log tại `data/vieneu-sdk.log`. Audio từ adapter Studio cũ được tạo lại theo cache SDK mới; nhịp đọc và vòng sửa thời lượng vẫn dùng chính sách của AIR3view.
+
+Kiểm tra tải model, giọng preset và clone bằng ba câu thử, không cần API key:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/check-vieneu.py
+```
+
+Nếu cần NVIDIA GPU, chạy script dưới đây rồi khởi động lại AIR3view và chọn **NVIDIA CUDA** hoặc **Tự động**:
+
+```powershell
+.\Install-VieNeu-CUDA.ps1
+```
+
+Script cài PyTorch CUDA trong `.venv` và tách `transformers` cùng bản `huggingface-hub` dành cho VieNeu vào `data/vieneu-gpu-python`. Cách này giữ bộ Gradio client của AIR3view/OmniVoice không xung đột phiên bản. CUDA cần driver/GPU phù hợp. Nếu thiếu PyTorch/transformers hoặc PyTorch chưa nhận GPU, VieNeu tự chạy CPU/ONNX và báo thiết bị thực tế trong tiến trình/trạng thái. CPU là lựa chọn đã kiểm thử của tích hợp này.
+
+**OmniVoice là lựa chọn phụ.** Nếu cần, dùng môi trường Python riêng để tránh xung đột PyTorch với backend. Hướng dẫn gốc: [OmniVoice](https://github.com/k2-fsa/OmniVoice).
 
 Mở PowerShell thứ hai:
 
@@ -231,11 +253,11 @@ Tiêu đề câu chuyện, bật/tắt và mốc hook, cùng danh sách mốc ch
 
 ### Dịch vụ giọng đọc
 
-Trong **Kết nối**, AIR3view mặc định dùng **VieNeu-TTS** tại `http://localhost:7860`. VieNeu Studio cần được khởi động và nạp model trước khi bấm **Tạo giọng VieNeu**. Với VieNeu, chọn tên giọng có sẵn trong VieNeu hoặc dùng **Dùng giọng tham chiếu** và tải audio mẫu; Giọng có sẵn dùng endpoint `/wrapper`; giọng tham chiếu dùng `/wrapper_1` cùng audio mẫu và phần chép lời. Hai endpoint gắn chế độ riêng trên VieNeu; chỉ gửi audio vào `/wrapper` không chuyển sang chế độ clone.
+AIR3view mặc định dùng **VieNeu v3 Turbo chạy trực tiếp bằng SDK**. Chọn CPU/ONNX hoặc GPU trong Giọng/Kết nối. Trạng thái phân biệt SDK đã cài và model đã nạp; việc kiểm tra trạng thái không tải model. Không còn gọi URL/endpoint Studio, kể cả dự án cũ vẫn lưu `vieneu_url`.
 
-**OmniVoice** tại `http://127.0.0.1:8001` vẫn là lựa chọn phụ. Chuyển dịch vụ sẽ tạo lại audio theo fingerprint mới, còn video, kịch bản và phụ đề được giữ lại. Cổng và URL chỉ được phép là HTTP localhost để tránh gửi audio giọng ra ngoài máy.
+**OmniVoice** tại `http://127.0.0.1:8001` vẫn là lựa chọn phụ và cần dịch vụ riêng. Chuyển engine hoặc giọng sẽ tạo lại audio/phụ đề AI theo fingerprint mới khi chạy tạo giọng/dựng lại; nguồn và kịch bản vẫn giữ. URL OmniVoice chỉ được phép HTTP localhost.
 
-Nếu VieNeu báo `None` hoặc **Vui lòng tải model trước**, dịch vụ vẫn đang chạy nhưng chưa nạp model. Mở VieNeu Studio, chọn backbone/codec/device và bấm **Load model**, chờ trạng thái sẵn sàng rồi bấm tạo giọng lại. AIR3view kiểm tra trạng thái trước khi bắt đầu tạo giọng và báo hướng dẫn này thay vì lưu audio rỗng.
+Nếu báo thiếu SDK, chạy lại cài đặt `requirements.txt`. Nếu tải model lỗi, kiểm tra Internet và log `data/vieneu-sdk.log`, rồi thử lại. Nếu tên giọng không có, chọn lại giọng preset trong AIR3view hoặc dùng mẫu tham chiếu. Không cần bấm Load model ở ứng dụng khác.
 
 ### Lời kể không đọc mốc dẫn chứng
 
@@ -251,7 +273,7 @@ Tiến độ dựng hiển thị thời lượng đã xử lý, tốc độ và 
 
 **Dựng thử 15s** xuất tối đa 15 giây từ vị trí đầu phát hiện tại, giới hạn trong phần đang xem, ở 360×640. Các hiệu ứng xử lý trực tiếp tại độ phân giải này; video xuất đầy đủ vẫn là 1080×1920. Cache nằm trong `data/<project-id>/render-cache/`, dùng thêm dung lượng ổ đĩa và được xóa cùng dự án. Không cần xóa cache khi đổi cấu hình: nội dung thay đổi sẽ có chữ ký riêng.
 
-Trong **Bố cục → Bộ mã hóa xuất**, mặc định **Tự động** thử một lần encode NVENC thật để kiểm tra GPU/driver, không chỉ kiểm tra danh sách encoder của FFmpeg. Nếu dùng được, xuất H.264 NVENC preset p4/CQ26. Nếu không, dùng CPU libx264 veryfast/CRF20. Lỗi khởi tạo thiết bị NVENC trong chế độ Tự động cũng có thể chạy lại bằng CPU; lỗi dữ liệu, hủy và lỗi filter không bị che bằng fallback. Chọn NVIDIA NVENC thủ công sẽ báo lỗi nếu thiết bị không dùng được.
+Trong **Bố cục → Bộ mã hóa xuất**, cả **Tự động** và **NVIDIA NVENC** đều thử mã hóa một frame để kiểm tra GPU/driver, không chỉ kiểm tra danh sách encoder của FFmpeg. Nếu dùng được, xuất H.264 NVENC preset p4/CQ26. Nếu driver không tương thích hoặc thiết bị NVENC không sẵn sàng, toàn bộ phần được chuyển sang CPU libx264 veryfast/CRF20 và ghi cảnh báo. Khi chỉ thiếu tài nguyên GPU lúc chạy song song, renderer thử một luồng trước khi chuyển CPU. Lỗi dữ liệu, hủy và lỗi filter không bị che bằng fallback.
 
 Renderer dùng tối đa 4 luồng filter và 8 luồng CPU encode, vẫn giữ nguyên cắt cảnh, voice, phụ đề và kiểm tra thời lượng. Không gộp cảnh tự động vì benchmark gộp input trên nguồn VP9 cho thấy sai khác frame ở điểm nối cần xử lý riêng. NVENC tăng tốc bước encode/render, không tăng tốc AI, VieNeu hoặc ASR. `scripts/benchmark_render.py` tạo bản đo riêng trong `data/<project>/diagnostics`, không cập nhật bản xuất dự án.
 
@@ -299,7 +321,7 @@ Luồng mới: hiểu nguồn → chọn cảnh và thoại gốc (chưa viết 
 
 `duration_plan` có trạng thái `planned` rồi `ready`, fingerprint đầu vào, lịch hình và các slot. Lịch được lưu trước khi viết lời để retry phần lời có thể dùng lại lịch. TTS/render kiểm tra manifest ready, hình học, mốc và thời lượng narration; không cho bỏ qua manifest của dự án mới. Các đoạn thoại gốc đã chọn được giữ nguyên, không tự chọn lại ở bước viết lời. Hỗ trợ một video hoặc nhiều phần.
 
-Với workflow mới, nhịp audio chỉ được căn thêm ±5% quanh tốc độ đã chọn. VieNeu áp tốc độ qua FFmpeg vì API không có tham số speed; OmniVoice nhận speed trực tiếp. Audio ngoài ngưỡng đi vào vòng sửa câu, không kéo giọng 0,5–1,5× như đường legacy. VieNeu dùng temperature 0,4 thống nhất để giảm biến thiên; giọng mẫu/preset không thay đổi giữa các đoạn. Điều này không bảo đảm cảm xúc giống hệt nhau: vẫn cần nghe duyệt đoạn mẫu và bản cuối.
+Với workflow mới, nhịp audio chỉ được căn thêm ±5% quanh tốc độ đã chọn. VieNeu áp tốc độ qua FFmpeg vì SDK không có tham số speed; OmniVoice nhận speed trực tiếp. Audio ngoài ngưỡng đi vào vòng sửa câu, không kéo giọng 0,5–1,5× như đường legacy. VieNeu v3 Turbo dùng temperature 0,8 thống nhất theo khuyến nghị model; giọng mẫu/preset không thay đổi giữa các đoạn. Điều này không bảo đảm cảm xúc giống hệt nhau: vẫn cần nghe duyệt đoạn mẫu và bản cuối.
 
 Lịch khóa và tỷ lệ tối thiểu thuộc từng dự án, không bị cấu hình chung của dự án khác đổi tự động. Cache của nhịp mới tách khỏi audio kéo giãn cũ. Audio/phụ đề không đổi được dùng lại khi tiếp tục, không nhận dạng lại toàn bộ lời AI.
 

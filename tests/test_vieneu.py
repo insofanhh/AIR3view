@@ -6,63 +6,38 @@ from backend import providers, store, vieneu
 from backend.models import Settings
 
 
-class FakeClient:
-    def view_api(self, **_kwargs):
-        return {'named_endpoints': {endpoint: {'parameters': [
-            {'parameter_name': name} for name in
-            ('param_0', 'param_1', 'param_2', 'param_3', 'param_5',
-             'param_6', 'param_7', 'param_8', 'param_9', 'param_10')
-        ]} for endpoint in ('/wrapper', '/wrapper_1')}}
-
-    def predict(self, **_kwargs):
-        return '✅ Model đã sẵn sàng'
-
-
-def test_vieneu_wrapper_uses_reference_and_exact_endpoint(monkeypatch, tmp_path):
+def test_sdk_clone_needs_audio_but_no_transcript(tmp_path):
     reference = tmp_path / 'reference.wav'
     reference.write_bytes(b'audio')
-    monkeypatch.setattr('gradio_client.handle_file', lambda path: {'path': path})
-    settings = Settings(tts_provider='vieneu', voice_mode='clone', language='Vietnamese').model_dump()
-    params = vieneu.parameters(FakeClient(), settings, 'Xin chào.', reference, 'Xin chao.')
-    assert vieneu.synthesis_endpoint(settings) == '/wrapper_1'
-    assert params['param_0'] == 'Xin chào.'
-    assert params['param_2'] == {'path': str(reference)}
-    assert params['param_3'] == 'Xin chao.'
-    assert params['param_5'] == 'Standard (Một lần)'
-    assert params['param_6'] is False
-
-
-def test_vieneu_requires_voice_when_no_reference():
-    settings = Settings(tts_provider='vieneu', voice_mode='design', vieneu_voice='').model_dump()
-    with pytest.raises(ValueError, match='tên giọng|audio giọng'):
-        vieneu.parameters(FakeClient(), settings, 'Xin chào.')
-
-
-def test_preset_uses_story_endpoint_and_explicit_voice():
-    settings = Settings(voice_mode='design', vieneu_voice='Minh Quân Pro').model_dump()
-    assert vieneu.synthesis_endpoint(settings) == '/wrapper'
-    params = vieneu.parameters(FakeClient(), settings, 'Xin chào.')
-    assert params['param_1'] == 'Minh Quân Pro'
-    assert params['param_2'] is None
-
-
-def test_clone_never_falls_back_to_preset_endpoint(tmp_path):
-    class PresetOnly(FakeClient):
-        def view_api(self, **kwargs):
-            api = super().view_api(**kwargs)
-            del api['named_endpoints']['/wrapper_1']
-            return api
     settings = Settings(voice_mode='clone').model_dump()
-    with pytest.raises(ValueError, match='/wrapper_1'):
-        vieneu.parameters(PresetOnly(), settings, 'Hello', tmp_path/'ref.wav', 'Reference')
+    params = vieneu.infer_parameters(settings, 'Xin chào.', reference)
+    assert params['ref_audio'] == str(reference.resolve())
+    assert 'voice' not in params and 'ref_text' not in params
+    assert params['temperature'] == .8
 
 
-def test_vieneu_readiness_explains_unloaded_model():
-    class Client(FakeClient):
-        def predict(self, **_kwargs):
-            return '⏳ Chưa tải model.'
-    with pytest.raises(RuntimeError, match='chọn model và bấm Load model'):
-        vieneu.ensure_ready(Client())
+def test_sdk_default_voice_and_explicit_voice():
+    settings = Settings().model_dump()
+    assert vieneu.infer_parameters(settings, 'Hi')['voice'] == 'Minh Quân'
+    settings['vieneu_voice'] = 'Mai Anh'
+    assert vieneu.infer_parameters(settings, 'Hi')['voice'] == 'Mai Anh'
+
+
+def test_sdk_rejects_missing_reference_and_unsupported_language():
+    with pytest.raises(ValueError, match='tham chiếu'):
+        vieneu.infer_parameters(Settings(voice_mode='clone').model_dump(), 'Hi')
+    with pytest.raises(ValueError, match='English'):
+        vieneu.infer_parameters(Settings(language='Chinese').model_dump(), 'Hi')
+
+
+def test_sdk_cache_ignores_old_url_and_transcript_but_tracks_device():
+    settings = Settings().model_dump()
+    n = {'text': 'Hi'}
+    baseline = providers.voice_hash(n, settings)
+    settings.update(vieneu_url='http://localhost:7860', voice_reference_text='Irrelevant')
+    assert providers.voice_hash(n, settings) == baseline
+    settings['vieneu_device'] = 'cuda'
+    assert providers.voice_hash(n, settings) != baseline
 
 
 def test_vieneu_voice_hash_is_separate_from_omnivoice():

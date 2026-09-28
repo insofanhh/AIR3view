@@ -108,14 +108,15 @@ def test_synthesis_reuses_measured_audio_after_adjusting_scene(tmp_path,monkeypa
         wav.writeframes(b'\x00\x00'*round(5.2*48000))
     p['settings'].update(tts_provider='vieneu',voice_mode='design',vieneu_voice='Test')
     monkeypatch.setattr(gradio_client,'Client',lambda *a,**kw:object())
-    monkeypatch.setattr('backend.vieneu.ensure_ready',lambda *a:None)
-    monkeypatch.setattr('backend.vieneu.parameters',lambda *a,**kw:{})
     calls=[]
     def generate(*args,**kwargs):
         calls.append(1)
-        raise DurationMismatchError('VieNeu',5.2,kwargs['target_duration'],audio_path=raw)
-    monkeypatch.setattr(providers,'generate_voice_audio',generate)
-    def fit(audio,destination,check,target,*args):
+        return raw
+    monkeypatch.setattr('backend.vieneu.generate',generate)
+    def fit(audio,destination,check,target_duration,*args,**kwargs):
+        target=target_duration
+        if target > 5.23:
+            raise DurationMismatchError('VieNeu',5.2,target,audio_path=raw)
         assert '.wav' in str(audio) and 5.18<target<5.23
         destination.parent.mkdir(exist_ok=True);destination.write_bytes(raw.read_bytes())
         return {'final_duration':5.2,'tempo':1}

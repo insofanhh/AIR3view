@@ -6,6 +6,8 @@ import re
 import shutil
 import subprocess
 import time
+import random
+from datetime import datetime, timezone
 from pathlib import Path
 import requests
 from . import credentials, store
@@ -17,6 +19,106 @@ from .voice_repair import (DurationMismatchError, RepairBudget,
 
 SESSION_KEY = ''
 GEMINI_SESSION_KEY = ''
+
+
+class OpenAIRequestTooLarge(RuntimeError):
+    """The request itself exceeds the organization's token-per-minute ceiling."""
+
+    def __init__(self, limit: int | None = None, requested: int | None = None):
+        self.limit, self.requested = limit, requested
+        detail = f' ({requested}/{limit} tokens)' if limit and requested else ''
+        super().__init__('Yêu cầu OpenAI vượt giới hạn token mỗi phút' + detail +
+                         '. Cần chia nhỏ dữ liệu đầu vào hoặc giảm độ dài đầu ra.')
+
+
+class OpenAIOutputIncomplete(RuntimeError):
+    """The API accepted a request but stopped before producing complete JSON."""
+
+    def __init__(self, reason: str, usage: dict | None = None):
+        self.reason = reason
+        self.usage = usage or {}
+        if reason == 'max_output_tokens':
+            message = ('OpenAI hết ngân sách token đầu ra trước khi trả JSON hoàn chỉnh. '
+                       'Cần chia nhỏ lô dữ liệu hoặc giảm độ dài kết quả; xem log .failure.json trong analysis-cache.')
+        elif reason == 'content_filter':
+            message = 'OpenAI dừng trả kết quả do bộ lọc nội dung; cần xem lại đoạn nguồn này.'
+        else:
+            message = f'OpenAI trả kết quả chưa hoàn chỉnh (lý do: {reason}).'
+        super().__init__(message)
+
+
+def _log_openai_failure(cache, fingerprint, settings, response, data, body, prompt, images):
+    """Record diagnostics without persisting prompts, frames, partial output or keys."""
+    usage = data.get('usage') or {}
+    details = data.get('incomplete_details') or {}
+    kind = re.search(r'Loại bằng chứng:\s*([^\.\n]+)', prompt)
+    record = {
+        'time_utc': datetime.now(timezone.utc).isoformat(),
+        'provider': 'openai', 'model': settings['model'],
+        'stage': kind.group(1).strip() if kind else body['text']['format']['name'],
+        'status': data.get('status'), 'reason': details.get('reason') or 'empty_output',
+        'response_id': data.get('id'), 'max_output_tokens': body['max_output_tokens'],
+        'input_tokens': usage.get('input_tokens'), 'output_tokens': usage.get('output_tokens'),
+        'reasoning_tokens': (usage.get('output_tokens_details') or {}).get('reasoning_tokens'),
+        'reasoning_effort': (body.get('reasoning') or {}).get('effort'),
+        'image_count': len(images), 'prompt_chars': len(prompt),
+        'http_status': response.status_code,
+    }
+    path = cache / (fingerprint + '.failure.json')
+    temporary = path.with_suffix('.failure.json.tmp')
+    temporary.write_text(json.dumps(record, ensure_ascii=False), 'utf-8')
+    temporary.replace(path)
+
+
+def _openai_error(response):
+    try:
+        error = response.json().get('error', {})
+    except (ValueError, AttributeError):
+        error = {}
+    message = str(error.get('message') or '')
+    match = re.search(r'Limit\s+(\d+)\s*,\s*Requested\s+(\d+)', message, re.I)
+    if response.status_code == 429 and match and int(match.group(2)) > int(match.group(1)):
+        return OpenAIRequestTooLarge(int(match.group(1)), int(match.group(2)))
+    if response.status_code == 429 and (error.get('code') in ('insufficient_quota', 'billing_hard_limit_reached')
+                                         or 'quota' in message.lower() or 'billing' in message.lower()):
+        return RuntimeError('OpenAI đã hết quota hoặc cần cập nhật thanh toán. Kiểm tra hạn mức tài khoản API.')
+    return None
+
+
+def _openai_output_cap(response_model):
+    # The Responses API reserves output tokens up front for TPM accounting.
+    # Keep room for reasoning tokens while bounding each request on small tiers.
+    name = response_model.__name__
+    if name == 'EvidenceAnswer':
+        return 3500
+    if name == 'NarrationReply':
+        return 2000
+    if name == 'FootagePlan':
+        return 5200
+    if name == 'CoverageReview':
+        return 3500
+    if name == 'ReactionFootagePlan':
+        return 5200
+    if name == 'StoryAnswer':
+        return 4000
+    if name == 'SpeechRoles':
+        return 3000
+    return 2500
+
+
+def _openai_retry_delay(response, attempt):
+    headers = response.headers
+    retry_after = headers.get('Retry-After', '')
+    try:
+        return min(60., max(0., float(retry_after)))
+    except ValueError:
+        pass
+    reset = headers.get('x-ratelimit-reset-tokens', '')
+    units = re.fullmatch(r'(?:(\d+)m)?(?:(\d+(?:\.\d+)?)s)?(?:(\d+)ms)?', reset.strip())
+    if units and any(part is not None for part in units.groups()):
+        minutes, seconds, milliseconds = units.groups()
+        return min(60., max(0., 60 * int(minutes or 0) + float(seconds or 0) + int(milliseconds or 0) / 1000))
+    return min(60., 2 ** attempt * 5 + random.random())
 
 
 def _persistent_key(provider):
@@ -111,22 +213,49 @@ def ask_ai(prompt, images, settings, folder, check, response_model=AnalysisAnswe
         content = [{'type': 'input_text', 'text': prompt}]
         for p in images:
             content.append({'type': 'input_image', 'image_url': 'data:image/jpeg;base64,' + base64.b64encode(p.read_bytes()).decode(), 'detail': 'auto'})
-        body = {'model': settings['model'], 'store': False, 'input': [{'role': 'user', 'content': content}], 'text': {'format': {'type': 'json_schema', 'name': 'video_analysis', 'strict': True, 'schema': schema}}}
-        for attempt in range(3):
-            check()
-            response = requests.post('https://api.openai.com/v1/responses', json=body, headers={'Authorization': 'Bearer ' + key()}, timeout=(15, 300))
-            if response.status_code not in (429, 500, 502, 503) or attempt == 2:
-                break
-            for _ in range(2 ** attempt * 5):
+        body = {'model': settings['model'], 'store': False, 'input': [{'role': 'user', 'content': content}],
+                'max_output_tokens': _openai_output_cap(response_model),
+                'text': {'format': {'type': 'json_schema', 'name': 'video_analysis', 'strict': True, 'schema': schema}}}
+        if settings['model'] in ('gpt-5.6-sol', 'gpt-5.6'):
+            # SRT cleanup is a constrained transcription task. The default
+            # medium effort can consume the entire response before any JSON
+            # appears, even for a small batch (see usage.reasoning_tokens).
+            body['reasoning'] = {'effort': 'none' if response_model.__name__ == 'OptimizedBatch' else 'low'}
+        for budget_attempt in range(2):
+            for attempt in range(4):
                 check()
-                time.sleep(1)
-        if not response.ok:
-            raise RuntimeError(redact(f'OpenAI {response.status_code}: {response.text[:800]}'))
-        data = response.json()
+                response = requests.post('https://api.openai.com/v1/responses', json=body, headers={'Authorization': 'Bearer ' + key()}, timeout=(15, 300))
+                known_error = _openai_error(response) if not response.ok else None
+                if known_error:
+                    raise known_error
+                if response.status_code not in (429, 500, 502, 503) or attempt == 3:
+                    break
+                delay = _openai_retry_delay(response, attempt)
+                deadline = time.monotonic() + delay
+                while time.monotonic() < deadline:
+                    check()
+                    time.sleep(min(1., max(0., deadline - time.monotonic())))
+            if not response.ok:
+                raise RuntimeError(redact(f'OpenAI {response.status_code}: {response.text[:800]}'))
+            data = response.json()
+            if (budget_attempt == 0 and body.get('reasoning', {}).get('effort') == 'low'
+                    and data.get('status') == 'incomplete'
+                    and (data.get('incomplete_details') or {}).get('reason') == 'max_output_tokens'):
+                # GPT-5.6 Sol supports none. This leaves the capped response
+                # for the required JSON when hidden reasoning used too much
+                # space. An incomplete JSON must never be cached as success.
+                _log_openai_failure(cache, fingerprint, settings, response, data, body, prompt, images)
+                body['reasoning'] = {'effort': 'none'}
+                continue
+            break
         text = ''.join(c.get('text', '') for item in data.get('output', []) for c in item.get('content', []) if c.get('type') == 'output_text')
         if data.get('status') != 'completed' or not text:
-            raise RuntimeError('AI chưa trả kết quả hoàn chỉnh. Kiểm tra model/hạn mức rồi thử lại.')
+            _log_openai_failure(cache, fingerprint, settings, response, data, body, prompt, images)
+            reason = (data.get('incomplete_details') or {}).get('reason') or (
+                'empty_output' if data.get('status') == 'completed' else str(data.get('status') or 'unknown'))
+            raise OpenAIOutputIncomplete(reason, data.get('usage'))
         (cache / (fingerprint + '.usage.json')).write_text(json.dumps(data.get('usage', {})), 'utf-8')
+        (cache / (fingerprint + '.failure.json')).unlink(missing_ok=True)
     else:
         binary = codex_binary()
         if not binary:
@@ -380,10 +509,15 @@ def voice_hash(narration, settings):
         synthesis.pop('tts_provider', None)
         synthesis.pop('vieneu_url', None)
     else:
+        from .vieneu import SDK_VERSION, MODEL, DEFAULT_VOICE, TEMPERATURE
         synthesis['tts_provider'] = 'vieneu'
-        synthesis['vieneu_voice'] = settings.get('vieneu_voice', '')
-        synthesis['vieneu_adapter'] = 2
-        for unused in ('omnivoice_url', 'voice_steps', 'voice_gender', 'voice_instruct'):
+        synthesis['vieneu_voice'] = settings.get('vieneu_voice', '').strip() or DEFAULT_VOICE
+        synthesis['vieneu_adapter'] = 'sdk-v3-turbo-1'
+        synthesis['vieneu_sdk'] = SDK_VERSION
+        synthesis['vieneu_model'] = MODEL
+        synthesis['vieneu_device'] = settings.get('vieneu_device', 'cpu')
+        synthesis['temperature'] = TEMPERATURE
+        for unused in ('vieneu_url', 'omnivoice_url', 'voice_steps', 'voice_gender', 'voice_instruct', 'voice_reference_text'):
             synthesis.pop(unused, None)
     # Old design clips used a random speaker per request; regenerate them once.
     if settings['voice_mode'] == 'design':
@@ -436,8 +570,6 @@ def _request_voice_audio(client, params, endpoint, report, check, progress, labe
     audio = output[0] if isinstance(output, (tuple, list)) else output
     if audio is None:
         detail = output[1] if isinstance(output, (tuple, list)) and len(output) > 1 else ''
-        if engine == 'VieNeu' and ('tải model' in str(detail).lower() or 'model' in str(detail).lower()):
-            raise RuntimeError('VieNeu chưa nạp model. Mở VieNeu Studio, chọn model và bấm Load model trước khi tạo giọng.')
         raise RuntimeError(f'{engine} không trả file audio: {detail}')
     if isinstance(audio, dict):
         audio = audio.get('path')
@@ -540,6 +672,11 @@ def synthesize(project, report, check, only_id=None):
     settings = project['settings']
     engine = 'VieNeu' if settings.get('tts_provider', 'vieneu') == 'vieneu' else 'OmniVoice'
     reference_data = None
+    if settings['voice_mode'] == 'clone' and engine == 'VieNeu':
+        from .vieneu import reference_clip
+        if not settings['voice_reference']:
+            raise ValueError('Chọn audio giọng mẫu trước khi tạo giọng VieNeu.')
+        reference_data = reference_clip(project, report, check)
     if settings['voice_mode'] == 'clone' and engine == 'OmniVoice':
         from .reference_voice import ensure_transcript
         ensure_transcript(project, report, check)
@@ -589,23 +726,16 @@ def synthesize(project, report, check, only_id=None):
                                                     settings['voice_speed'] if engine=='VieNeu' else 1)
                         break
                     report(5 + 80 * i / len(pending), f'{engine} tạo giọng {i+1}/{len(pending)}…')
-                    if client is None:
-                        client = Client(settings.get('vieneu_url', 'http://localhost:7860') if engine == 'VieNeu' else settings['omnivoice_url'], verbose=False, download_files=str(folder / 'voice-downloads'))
-                        if engine == 'VieNeu':
-                            from .vieneu import ensure_ready
-                            ensure_ready(client)
                     if engine == 'VieNeu':
-                        from .vieneu import parameters, reference_clip, synthesis_endpoint
-                        if settings['voice_mode'] == 'clone' and reference_data is None:
-                            if not settings['voice_reference']:
-                                raise ValueError('Chọn audio giọng mẫu trước khi tạo giọng VieNeu.')
-                            reference_data = reference_clip(project, report, check)
-                        params = parameters(client, settings, narration['text'], *(reference_data or (None, '')))
-                        fit_metrics = generate_voice_audio(client, params, synthesis_endpoint(settings), destination, report, check,
-                                             5 + 80 * i / len(pending), f'VieNeu {i+1}/{len(pending)}',
+                        from .vieneu import generate
+                        audio = generate(settings, narration['text'], raw_cached, report, check,
+                                         reference=reference_data, progress=5 + 80 * i / len(pending))
+                        fit_metrics = fit_voice_audio(audio, destination, check,
                                              target_duration=target, speed=settings['voice_speed'], engine='VieNeu',
                                              **({'stable_speed':settings['voice_speed']} if settings.get('production_workflow')=='plan_first' else {}))
                     else:
+                        if client is None:
+                            client = Client(settings['omnivoice_url'], verbose=False, download_files=str(folder / 'voice-downloads'))
                         common = dict(text=narration['text'], lang=settings['language'], ns=settings['voice_steps'], gs=2, dn=True, sp=settings['voice_speed'], du=target or None, pp=True, po=not bool(target))
                         if settings['voice_mode'] == 'clone':
                             if not settings['voice_reference']:

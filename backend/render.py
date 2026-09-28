@@ -39,6 +39,13 @@ def device_error(message):
         'cuda_error_out_of_memory','driver does not support','minimum required nvidia driver','no capable devices found'))
 
 
+def gpu_resource_error(message):
+    """Only resource pressure benefits from retrying NVENC with one worker."""
+    return any(x in str(message).lower() for x in (
+        'out of memory', 'cuda_error_out_of_memory', 'not enough memory',
+        'insufficient memory', 'too many concurrent sessions'))
+
+
 def run_encoded(prefix, suffix, preference, folder, check, progress=None, duration=0):
     """Auto retries on CPU only for known NVENC initialization/device errors."""
     global _NVENC
@@ -148,6 +155,29 @@ def layout(settings):
     return dict(top=330, height=1080, inside=1410-inset, below=1470, part=1760)
 
 
+def display_cues(cues, start, end):
+    """Resolve rolling caption updates into one readable subtitle lane."""
+    rows = [c for c in cues if c['end'] > start and c['start'] < end and c.get('text', '').strip()]
+    boundaries = sorted({start, end} | {max(start, min(end, c[k])) for c in rows for k in ('start', 'end')})
+    visible = []
+    for left, right in zip(boundaries, boundaries[1:]):
+        if right-left < .01:
+            continue
+        active = [c for c in rows if c['start'] < right-.001 and c['end'] > left+.001]
+        if not active:
+            continue
+        # Narration owns the caption lane. Later original captions replace
+        # earlier YouTube rolling updates instead of stacking on top of them.
+        chosen = max(active, key=lambda c: (c.get('speaker') == 'ai', c['start'], len(c['text'])))
+        if visible and visible[-1]['id'] == chosen.get('id') and abs(visible[-1]['end']-left)<.001:
+            visible[-1]['end'] = right
+        else:
+            visible.append({**chosen, 'start': left, 'end': right,
+                            'words': chosen.get('words', []) if left <= chosen['start']+.001
+                                     and right >= chosen['end']-.001 else []})
+    return visible
+
+
 def subtitle_documents(project, timeline, part):
     settings = project['settings']
     duration = part['duration']
@@ -184,7 +214,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             f"Dialogue: 1,0:00:00.00,{ass_time(duration)},Title,,0,0,0,,{title}",
         ]
     srt = []
-    for cue in timeline['cues']:
+    for cue in display_cues(timeline['cues'], part['start'], part['end']):
         a, b = max(cue['start'], part['start']) - part['start'], min(cue['end'], part['end']) - part['start']
         if b <= a:
             continue

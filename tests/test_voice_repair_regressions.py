@@ -92,25 +92,26 @@ def test_measured_candidate_runs_tts_while_completed_audio_stays_untouched(
     completed_path.write_bytes(b"completed")
     completed.update(audio=f"voices/{completed_path.name}", audio_hash=completed_hash)
 
-    monkeypatch.setattr("backend.vieneu.ensure_ready", lambda *args, **kwargs: None)
-    monkeypatch.setattr("backend.vieneu.parameters", lambda client, settings, text, *args: {"text": text})
-    monkeypatch.setattr("backend.vieneu.synthesis_endpoint", lambda settings: "/wrapper")
     monkeypatch.setattr("backend.narration_groups.repair_existing", lambda project, report, check: project)
     monkeypatch.setattr(gradio_client, "Client", lambda *args, **kwargs: object())
     monkeypatch.setattr(providers, "probe", lambda path: {"duration": 10})
 
     generated = []
 
-    def generate(client, params, endpoint, destination, report, check,
-                 progress, label, target_duration=0, **kwargs):
-        text = params["text"]
+    def generate(settings, text, destination, *args, **kwargs):
         generated.append(text)
-        if text == LONG_TEXT:
+        destination.parent.mkdir(exist_ok=True)
+        destination.write_text(text)
+        return destination
+
+    def fit(audio, destination, check, target_duration=0, **kwargs):
+        if audio.read_text() == LONG_TEXT:
             raise DurationMismatchError("OmniVoice", 20, target_duration)
         destination.parent.mkdir(exist_ok=True)
         destination.write_bytes(b"fitted")
 
-    monkeypatch.setattr(providers, "generate_voice_audio", generate)
+    monkeypatch.setattr("backend.vieneu.generate", generate)
+    monkeypatch.setattr(providers, "fit_voice_audio", fit)
     prompts = []
 
     def ask_ai(prompt, *args):

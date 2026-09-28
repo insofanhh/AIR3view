@@ -178,7 +178,15 @@ def render_cached(project,report,check,preview=False,preview_start=0):
     root=store.project_dir(project['id'])
     cache=root/'render-cache';cache.mkdir(exist_ok=True)
     preference=project['settings'].get('render_encoder','auto')
-    encoder='nvenc' if preference=='nvenc' or (preference=='auto' and renderer.nvenc_available()) else 'cpu'
+    # Probe a real one-frame encode even for a manually preferred NVENC mode.
+    # FFmpeg listing h264_nvenc does not prove the installed driver supports
+    # the NVENC API used by this FFmpeg build.
+    gpu_ready = renderer.nvenc_available() if preference in ('auto', 'nvenc') else False
+    encoder='nvenc' if gpu_ready else 'cpu'
+    if preference == 'nvenc' and not gpu_ready:
+        warning='NVENC không tương thích GPU/driver hiện tại; tự chuyển sang CPU libx264 để tiếp tục xuất video.'
+        project.setdefault('warnings', []).append(warning)
+        report(0, warning)
     total=sum(p['duration'] for p in parts);completed=0;exports=[];last_progress=0
     def stage(part,begin,span,label):
         def update(done,duration,speed):
@@ -244,13 +252,14 @@ def render_cached(project,report,check,preview=False,preview_start=0):
                 break
             except RuntimeError as exc:
                 if encoder!='nvenc' or not renderer.device_error(exc):raise
-                if workers>1:
+                if workers>1 and renderer.gpu_resource_error(exc):
                     workers=1
                     report(last_progress,'GPU thiếu tài nguyên; giảm còn một luồng và dùng lại các đoạn đã xong.')
                     continue
-                if preference!='auto':raise
                 check();renderer._NVENC=False;encoder='cpu'
-                report(last_progress,'GPU không sẵn sàng; chuyển cả phần sang CPU để giữ đồng nhất các đoạn.')
+                warning='GPU/driver NVENC không sẵn sàng; chuyển cả phần sang CPU để giữ đồng nhất các đoạn.'
+                project.setdefault('warnings', []).append(warning)
+                report(last_progress,warning)
         key_audio=audio_key(project,timeline,part)
         afolder=cache/'audio'/key_audio;afolder.mkdir(parents=True,exist_ok=True)
         audio_reused=valid_cache(afolder,'mix.wav','audio',part['duration'])

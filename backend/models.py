@@ -89,8 +89,9 @@ class Settings(Model):
     split_mode: Literal['exact', 'natural'] = 'natural'
     part_durations: list[float] = Field(default_factory=list, max_length=200)
     tts_provider: Literal['vieneu', 'omnivoice'] = 'vieneu'
-    vieneu_url: str = 'http://localhost:7860'
+    vieneu_url: str = ''  # Legacy saved projects; the SDK never uses this URL.
     vieneu_voice: str = ''
+    vieneu_device: Literal['cpu', 'auto', 'cuda'] = 'cpu'
     omnivoice_url: str = 'http://127.0.0.1:8001'
     voice_mode: Literal['design', 'clone'] = 'design'
     voice_reference: str = ''
@@ -101,6 +102,7 @@ class Settings(Model):
     voice_gender: str = 'Auto'
     voice_steps: int = Field(default=32, ge=4, le=64)
     narration_style: Literal['highlights', 'storytelling'] = 'highlights'
+    editorial_mode: Literal['standard', 'reaction_cops'] = 'standard'
     original_dialogue_ratio: float = Field(default=.15, ge=.1, le=1)
     analysis_workflow: Literal['efficient', 'detailed'] = 'efficient'
     production_workflow: Literal['plan_first', 'legacy'] = 'legacy'
@@ -189,4 +191,4 @@ class StoryAnswer(Model):
     outcome: str = Field(min_length=1)
     lesson: str = Field(min_length=1)
     hook: HookAnswer
-    selections: list[StorySelection] = Field(min_length=3, max_length=500)
+    selections: list[StorySelection] = Field(min_length=1, max_length=500)

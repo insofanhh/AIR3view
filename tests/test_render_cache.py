@@ -191,3 +191,35 @@ def test_gpu_failure_reduces_workers_then_rebuilds_with_one_consistent_cpu_encod
     assert p['preview_exports'][0]['cache']['video_rendered']==6
     assert any('giảm còn một luồng' in m for m in messages)
     assert any('chuyển cả phần sang CPU' in m for m in messages)
+
+
+def test_forced_nvenc_with_incompatible_driver_preflights_to_cpu(media_project,monkeypatch):
+    p,_=media_project;p['settings']['render_encoder']='nvenc'
+    monkeypatch.setattr(render,'_NVENC',None)
+    monkeypatch.setattr(render,'nvenc_available',lambda:False)
+    messages=[]
+    render.render(p,lambda value,message:messages.append(message),lambda:None,preview=True)
+    assert p['preview_exports'][0]['encoder']=='cpu'
+    assert any('NVENC không tương thích' in message for message in messages)
+    assert any('NVENC không tương thích' in warning for warning in p['warnings'])
+
+
+def test_forced_nvenc_runtime_driver_mismatch_rebuilds_with_cpu_key(media_project,monkeypatch):
+    p,_=media_project;p['settings']['render_encoder']='nvenc'
+    monkeypatch.setattr(render,'_NVENC',None)
+    monkeypatch.setattr(render,'nvenc_available',lambda:True)
+    monkeypatch.setattr(render_cache,'render_workers',lambda *a:2)
+    original=render.render_part
+    attempts=[];messages=[]
+    def fail_gpu(project,*args,**kwargs):
+        attempts.append(project['settings']['render_encoder'])
+        if project['settings']['render_encoder']=='nvenc':
+            raise RuntimeError('Driver does not support the required nvenc API version. Required: 13.1 Found: 13.0')
+        return original(project,*args,**kwargs)
+    monkeypatch.setattr(render,'render_part',fail_gpu)
+    render.render(p,lambda value,message:messages.append(message),lambda:None,preview=True)
+    assert 1<=attempts.count('nvenc')<=6  # In-flight parallel chunks may fail together.
+    assert p['preview_exports'][0]['encoder']=='cpu'
+    assert p['preview_exports'][0]['cache']['video_rendered']==6
+    assert any('chuyển cả phần sang CPU' in message for message in messages)
+    assert not any('giảm còn một luồng' in message for message in messages)

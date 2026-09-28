@@ -76,3 +76,14 @@ def test_hook_from_late_source_then_restart_is_separate_input(tmp_path, monkeypa
     assert colors[1][0] > 200 and colors[1][2] < 20  # source restarts: red
     assert colors[2][2] > 200 and colors[2][0] < 20  # source continues: blue
     assert abs(result['duration'] - 5) < .05
+def test_rolling_captions_replace_prior_update_without_overlapping():
+    from backend.render import display_cues
+    cues = [
+        {'id':'early','start':0,'end':4,'text':'Wait','speaker':'original','words':[]},
+        {'id':'update','start':2,'end':6,'text':'Wait for me','speaker':'original','words':[]},
+        {'id':'ai','start':5,'end':5.5,'text':'A new turn','speaker':'ai','words':[]},
+    ]
+    visible = display_cues(cues, 0, 6)
+    assert [(c['id'],c['start'],c['end']) for c in visible] == [
+        ('early',0,2),('update',2,5),('ai',5,5.5),('update',5.5,6)]
+    assert all(a['end']<=b['start'] for a,b in zip(visible,visible[1:]))

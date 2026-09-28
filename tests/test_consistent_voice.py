@@ -38,12 +38,8 @@ def test_plan_first_has_separate_cache_from_stretched_legacy_audio():
     assert providers.voice_hash(n,settings)!=legacy
 
 
-def test_vieneu_uses_fixed_lower_temperature_in_new_workflow():
-    class Client:
-        def view_api(self,**kwargs):
-            return {'named_endpoints':{'/wrapper':{'parameters':[{'parameter_name':x} for x in
-              ['param_0','param_1','param_2','param_3','param_5','param_6','param_7','param_8','param_9','param_10']]}}}
+def test_vieneu_v3_uses_recommended_temperature_across_workflows():
     settings=Settings(vieneu_voice='Preset',production_workflow='plan_first').model_dump()
-    assert vieneu.parameters(Client(),settings,'Text')['param_8']==.4
+    assert vieneu.infer_parameters(settings,'Text')['temperature']==.8
     settings['production_workflow']='legacy'
-    assert vieneu.parameters(Client(),settings,'Text')['param_8']==.8
+    assert vieneu.infer_parameters(settings,'Text')['temperature']==.8

@@ -11,10 +11,14 @@ def storytelling(settings):
     return settings.get('narration_style') == 'storytelling'
 
 
+def reaction_cops(settings):
+    return settings.get('editorial_mode') == 'reaction_cops'
+
+
 def source_led(project):
     """High retention can replace narration only with classified real speech."""
     from .source_speech import active
-    return (storytelling(project['settings']) and project['settings'].get('original_dialogue_ratio',.15)>.5
+    return (not reaction_cops(project['settings']) and storytelling(project['settings']) and project['settings'].get('original_dialogue_ratio',.15)>.5
             and project.get('metadata',{}).get('has_audio',True) and active(project))
 
 
@@ -42,6 +46,9 @@ def speech_rate(project):
 def validate_narration_budget(result, project, check_text=True):
     if not storytelling(project['settings']):
         return
+    if reaction_cops(project['settings']):
+        from .reaction_cops import validate_audio_roles
+        return validate_audio_roles(result, project, check_text)
     items = result['selections']
     from .story_bridges import validate as validate_structure
     validate_structure(result,project,check_text)
@@ -116,9 +123,16 @@ def duration_budget_stats(result, project):
     settings = project['settings']
     source = float(project['metadata']['duration'])
     count, target = output_budget(settings, source)
+    # Reaction COPS is constrained by verified, clean in-scene speech rather
+    # than the raw source length. Keep the user's requested setting intact;
+    # only the derived scheduling target becomes source-feasible.
+    reaction_budget = project.get('reaction_duration_budget') if reaction_cops(settings) else None
+    if reaction_budget and reaction_budget.get('part_count') == count:
+        target = min(float(target), float(reaction_budget['effective_seconds']))
     hook_seconds = float(result.get('hook', {}).get('end', 0)) - float(result.get('hook', {}).get('start', 0))
     hook_seconds = max(0.0, hook_seconds)
-    feasible_total = source + hook_seconds
+    feasible_total = (float(reaction_budget['available_seconds']) + hook_seconds
+                      if reaction_budget else source + hook_seconds)
     min_ratio = project['settings'].get('duration_min_ratio', .75)
     if project['settings'].get('production_workflow', 'legacy') == 'legacy':
         min_ratio = .75
@@ -126,7 +140,7 @@ def duration_budget_stats(result, project):
     # If the requested total cannot fit in the source, lower the bound only to
     # the amount that can physically be assembled, never below ten seconds per
     # part.  This preserves strict 75–100% checking whenever feasible.
-    feasible_min_total = min(requested_min_total, source * min_ratio)
+    feasible_min_total = min(requested_min_total, feasible_total * min_ratio)
     minimum = max(10.0, feasible_min_total / count)
     totals = {part: 0.0 for part in range(1, count + 1)}
     totals[1] = hook_seconds
@@ -160,6 +174,7 @@ def duration_plan_manifest(result, project):
                       'voice_target': round(max(0, source_duration - .04), 3)
                       if item.get('narration', '').strip() else 0})
     return {'version': 1, 'mode': 'duration-first', 'target': stats['target'],
+            'requested_target': output_budget(project['settings'], stats['source'])[1],
             'minimum': stats['minimum'], 'source': stats['source'],
             'hook': stats['hook'], 'slots': slots}
 
@@ -291,7 +306,7 @@ def plan_fingerprint(project):
     from .providers import digest
     s = project['settings']
     workflow = s.get('production_workflow', 'legacy')
-    names = ['output_mode', 'language', 'draft_rule', 'review_rule',
+    names = ['output_mode', 'language', 'draft_rule', 'review_rule', 'editorial_mode',
              'summary_rule', 'voice_speed', 'hook_enabled']
     if workflow == 'plan_first':
         names += ['production_workflow', 'duration_min_ratio']
@@ -307,6 +322,9 @@ def plan_fingerprint(project):
                'duration': project['metadata'].get('duration'),
                'settings': {k: s.get(k) for k in names},
                'transcript': [{k: c[k] for k in ('start', 'end', 'text')} for c in transcript]}
+    if reaction_cops(s):
+        from .reaction_cops import VERSION as REACTION_VERSION
+        payload['reaction_cops_version'] = REACTION_VERSION
     if workflow == 'plan_first':
         payload['evidence'] = project.get('scenes', [])
         payload['summary'] = project.get('summary', '')
@@ -331,6 +349,9 @@ def plan_is_current(project):
 
 def validate_plan(result, project, *, check_text=True):
     """Reject cut plans that discard the ending, repeat footage, or exceed budgets."""
+    if reaction_cops(project['settings']):
+        from .reaction_cops import validate_plan as validate_reaction_plan
+        return validate_reaction_plan(result, project, check_text=check_text)
     if isinstance(result, dict) and isinstance(result.get('selections'), list):
         result = copy.deepcopy(result)
         for selection in result['selections']:
@@ -440,6 +461,9 @@ def can_resume_story(project):
 
 
 def plan_story(project, report, check):
+    if reaction_cops(project['settings']):
+        from .reaction_cops import plan_reaction
+        return plan_reaction(project, report, check)
     from .source_policy import RULE, VERSION
     from .narration_text import clean_narration
     if project['settings'].get('production_workflow') == 'plan_first' and storytelling(project['settings']):
