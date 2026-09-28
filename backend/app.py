@@ -15,7 +15,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from . import store, providers, preferences
+from . import store, providers, preferences, updates
 from .models import Model, ProjectEdit, Settings
 from pydantic import Field
 from .media import prepare, transcribe, parse_srt, Cancelled, FFMPEG
@@ -119,7 +119,7 @@ async def lifespan(app):
     _runtime.close()
 
 
-app = FastAPI(title='AIR3view Studio', version='0.1.0', lifespan=lifespan)
+app = FastAPI(title='AIR3view Studio', version=updates.installed_version(), lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=['127.0.0.1', 'localhost', '[::1]', 'testserver'])
 
 
@@ -188,7 +188,12 @@ def editable(pid):
 
 @app.get('/api/health')
 def health():
-    return {'ok': True, 'ffmpeg': bool(shutil.which(FFMPEG) or Path(FFMPEG).is_file()), 'codex': bool(providers.codex_binary()), 'api_key': bool(providers.key()), 'gemini_api_key': bool(providers.key('gemini')), 'openai_key_source': providers.key_source('openai'), 'gemini_key_source': providers.key_source('gemini'), 'version': '0.1.0', 'voice_repair_version':providers.VOICE_REPAIR_VERSION}
+    return {'ok': True, 'ffmpeg': bool(shutil.which(FFMPEG) or Path(FFMPEG).is_file()), 'codex': bool(providers.codex_binary()), 'api_key': bool(providers.key()), 'gemini_api_key': bool(providers.key('gemini')), 'openai_key_source': providers.key_source('openai'), 'gemini_key_source': providers.key_source('gemini'), 'version': updates.installed_version(), 'voice_repair_version':providers.VOICE_REPAIR_VERSION}
+
+
+@app.get('/api/update')
+def update_status(refresh: bool = False):
+    return updates.check_updates(refresh=refresh)
 
 
 @app.get('/api/omnivoice')

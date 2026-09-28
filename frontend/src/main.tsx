@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ArrowLeft, ArrowRight, Check, ChevronDown, ChevronRight, Clapperboard, Download, Film, FolderOpen, Layers, Link2, LoaderCircle, Maximize2, Mic, MoreHorizontal, Pause, Play, Plus, RefreshCw, Save, Scissors, Settings2, SkipBack, SlidersHorizontal, Sparkles, Subtitles, Trash2, Undo2, Upload, Volume2, WandSparkles, X, Zap } from 'lucide-react';
 import './style.css';
+import './update.css';
 import { NumberInput } from './NumberInput';
 import { DurationControls } from './DurationControls';
 import { budgetSummary, durationBudget } from './durationBudget';
@@ -15,6 +16,7 @@ type Project = { shared_voice?:{audio:string;text:string}|null; preview?:{file:s
 type Timeline = { source_mutes?:{start:number;end:number}[]; original_audio?:{start:number;end:number}[]; narration_mix?:{ai_ratio:number;original_ratio:number}; retention?:{requested_ratio:number;actual_ratio:number;available_seconds:number;shortfall_seconds:number}; planned?:boolean; clips:any[]; voices:any[]; cues:Cue[]; parts:any[]; duration:number; warnings:string[] };
 type Job = { id:string; kind:string; state:string; progress:number; message:string; error:string };
 type KeyResult = { provider:'openai'|'gemini'; configured:boolean; storage:'local_encrypted'; source?:'local_encrypted'|'environment'|'none' };
+type UpdateStatus = { available:boolean; status:'ok'|'unavailable'; current_version:string; latest_version:string|null; release_url:string|null };
 const emptyTimeline:Timeline = {clips:[],voices:[],cues:[],parts:[],duration:0,warnings:[]};
 const media = (p:Project,file:string) => `/media/${p.id}/${file.split('/').map(encodeURIComponent).join('/')}`;
 const clock = (n:number) => `${Math.floor((n||0)/60).toString().padStart(2,'0')}:${Math.floor((n||0)%60).toString().padStart(2,'0')}`;
@@ -33,6 +35,7 @@ function Toggle({label,value,onChange}:{label:string;value:boolean;onChange:(x:b
 function App(){
   const [projects,setProjects]=useState<Project[]>([]),[p,setP]=useState<Project|null>(null),[tl,setTl]=useState<Timeline>(emptyTimeline),[jobs,setJobs]=useState<Job[]>([]);
   const [health,setHealth]=useState<any>({}),[omni,setOmni]=useState<boolean|null>(null),[tab,setTab]=useState('source'),[panel,setPanel]=useState('output');
+  const [updateInfo,setUpdateInfo]=useState<UpdateStatus|null>(null),[checkingUpdate,setCheckingUpdate]=useState(false),[dismissedUpdate,setDismissedUpdate]=useState(()=>{try{return localStorage.getItem('air3view-dismissed-update')||'';}catch{return '';}});
   const [importOpen,setImportOpen]=useState(false),[exportOpen,setExportOpen]=useState(false),[url,setUrl]=useState(''),[uploading,setUploading]=useState(false),[uploadPercent,setUploadPercent]=useState(0);
   const [error,setError]=useState(''),[notice,setNotice]=useState(''),[dirty,setDirty]=useState(false),[saving,setSaving]=useState(false),[switching,setSwitching]=useState(false),[assetUploading,setAssetUploading]=useState(false),[keySaving,setKeySaving]=useState(false),[time,setTime]=useState(0),[playing,setPlaying]=useState(false),[playbackReady,setPlaybackReady]=useState(false),[apiKey,setApiKey]=useState('');
   const [geminiKeyVersion,setGeminiKeyVersion]=useState(0),[checkingGemini,setCheckingGemini]=useState(false),[hiddenJobError,setHiddenJobError]=useState('');
@@ -62,6 +65,17 @@ function App(){
   }
   const refreshList=()=>api<Project[]>('/projects').then(setProjects).catch(notify);
   useEffect(()=>{refreshList();const check=()=>{api('/health').then(setHealth).catch(()=>{});};check();const id=setInterval(check,30000);return()=>clearInterval(id);},[]);
+  async function checkUpdate(manual=false){
+    if(manual)setCheckingUpdate(true);
+    try{
+      const result=await api<UpdateStatus>('/update'+(manual?'?refresh=true':''));
+      setUpdateInfo(result);
+      if(manual&&result.available)setDismissedUpdate('');
+      if(manual)setNotice(result.status==='unavailable'?'Không thể kiểm tra cập nhật. Hãy thử lại khi có Internet.':result.available?`Có AIR3view ${result.latest_version}. Mở trang tải ở thông báo phía trên.`:'Bạn đang dùng phiên bản mới nhất.');
+    }catch{if(manual)setNotice('Không thể kiểm tra cập nhật. Hãy thử lại khi có Internet.');}
+    finally{if(manual)setCheckingUpdate(false);}
+  }
+  useEffect(()=>{void checkUpdate();const id=setInterval(()=>{void checkUpdate();},6*60*60*1000);return()=>clearInterval(id);},[]);
   async function flushPendingEdits(){
     const projectId=current.current?.id;
     while(projectId&&current.current?.id===projectId&&editVersion.current!==savedVersion.current)await persist();
@@ -216,10 +230,11 @@ function App(){
       <button className="nav-item" onClick={()=>setImportOpen(true)}><Plus size={18}/> Nhập video mới</button>
       <div className="recent-heading">DỰ ÁN GẦN ĐÂY</div>
       <div className="recent-list">{projects.slice(0,8).map(x=><button key={x.id} disabled={switching} className={'recent-project '+(p?.id===x.id?'selected':'')} onClick={()=>choose(x)}><span className="project-mini">{x.frames[0]?<img src={media(x,x.frames[0].file)}/>:<Film size={15}/>}</span><span>{x.name}<small>{x.metadata.duration?clock(x.metadata.duration)+' nguồn':'Đang nhập nguồn'}</small></span></button>)}</div>
-      <div className="rail-bottom"><div className="local-badge"><i/> Chạy trên máy của bạn</div><button onClick={()=>{if(p)setPanel('connect');else setNotice('Tạo hoặc mở dự án để thiết lập kết nối AI.');}}><Settings2 size={17}/> Kết nối & cài đặt</button><span className="version">AIR3view Studio <b>v0.1</b></span></div>
+      <div className="rail-bottom"><div className="local-badge"><i/> Chạy trên máy của bạn</div><button onClick={()=>{if(p)setPanel('connect');else setNotice('Tạo hoặc mở dự án để thiết lập kết nối AI.');}}><Settings2 size={17}/> Kết nối & cài đặt</button><button onClick={()=>void checkUpdate(true)} disabled={checkingUpdate}><RefreshCw size={15} className={checkingUpdate?'spin':''}/> Kiểm tra cập nhật</button><span className="version">AIR3view Studio <b>v{health.version||'…'}</b></span></div>
     </aside>
     <main className="main">
       <header className="topbar"><div className="breadcrumbs"><span>Workspace</span><ChevronRight size={14}/><strong>{p?'Trình biên tập':'Dự án của bạn'}</strong></div><div className="top-actions"><span className={'connection '+(omni?'online':'')}><i/>{ttsProvider==='vieneu'?(omni?'VieNeu SDK đã cài':'Kiểm tra VieNeu SDK'):(omni?'OmniVoice đã kết nối':'OmniVoice chưa kết nối')}</span><div className="avatar">A</div></div></header>
+      {updateInfo?.available&&updateInfo.latest_version!==dismissedUpdate&&updateInfo.release_url&&<div className="update-banner" role="status"><div><strong>Đã có AIR3view v{updateInfo.latest_version}</strong><span>Bạn đang dùng v{updateInfo.current_version}. Tải bộ cài mới để cập nhật; dự án đã lưu được giữ nguyên.</span></div><a href={updateInfo.release_url} target="_blank" rel="noopener noreferrer">Xem bản cập nhật <ArrowRight size={14}/></a><IconButton label="Ẩn thông báo cập nhật" onClick={()=>{const version=updateInfo.latest_version||'';setDismissedUpdate(version);try{localStorage.setItem('air3view-dismissed-update',version);}catch{}}}><X size={16}/></IconButton></div>}
       {error&&<div className="error-banner" role="alert"><span>{error}</span><IconButton label="Đóng thông báo" onClick={()=>setError('')}><X size={16}/></IconButton></div>}
       {notice&&<div className="toast" role="status"><Check size={16}/>{notice}</div>}
       {!p?<section className="library">

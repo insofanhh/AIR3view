@@ -17,6 +17,7 @@ def main():
     assert (root / 'tools' / 'ffmpeg.exe').is_file()
     assert (root / 'tools' / 'deno.exe').is_file()
     assert (root / 'tools' / 'codex.exe').is_file()
+    assert (root / 'APP_VERSION').is_file()
     from backend import vieneu
 
     assert vieneu.status()['ok'], 'VieNeu SDK missing from installer'
@@ -53,6 +54,7 @@ def main():
                 else:
                     raise TimeoutError('Packaged server did not become healthy')
                 assert health['ok'] and health['ffmpeg'] and health['codex'], health
+                assert health['version'] == (root / 'APP_VERSION').read_text(encoding='ascii').strip()
                 with urlopen(f'http://127.0.0.1:{port}/api/tts?provider=vieneu', timeout=5) as response:
                     assert json.load(response)['ok']
                 with urlopen(f'http://127.0.0.1:{port}/', timeout=5) as response:

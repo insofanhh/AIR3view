@@ -8,6 +8,8 @@ Tải `AIR3view-Setup-*-win64.exe` từ [GitHub Releases](https://github.com/ins
 
 Ứng dụng mở giao diện trong trình duyệt tại `http://127.0.0.1:8765/`; biểu tượng ở khay hệ thống có lệnh mở lại và thoát. Dự án, bản xuất và log nằm trong `%LOCALAPPDATA%\AIR3view\data`, được giữ khi cập nhật hoặc gỡ ứng dụng. Có thể đặt `AIR3VIEW_DATA` trước khi mở để dùng thư mục dữ liệu khác. VieNeu và faster-whisper tải model khi dùng lần đầu nên vẫn cần Internet lúc đó. Nếu chọn Codex, mở shortcut **Đăng nhập Codex** trong Start Menu một lần; nếu chọn OpenAI/Gemini, nhập API key trong tab Kết nối. OmniVoice là dịch vụ tùy chọn riêng, không nằm trong bản cài.
 
+Từ bản có chức năng kiểm tra cập nhật, AIR3view tự kiểm tra GitHub Releases khi mở và sau mỗi 6 giờ. Khi có Release ổn định mới hơn với bộ cài Windows, thanh thông báo trong giao diện dẫn tới trang tải chính thức; mục **Kiểm tra cập nhật** ở thanh bên cho phép kiểm tra lại ngay. Mất mạng không cản việc dùng ứng dụng. Việc cài bản mới vẫn do người dùng thực hiện; bản đang cài trước khi có tính năng này chưa thể tự hiện thông báo và cần nâng cấp thủ công một lần.
+
 Để tự tạo bộ cài từ mã nguồn trên Windows, xem [installer/Build-Windows.ps1](installer/Build-Windows.ps1) và [thành phần đóng gói](installer/THIRD_PARTY.md). Workflow `.github/workflows/windows-installer.yml` kiểm tra bản đóng gói, tạo artifact khi chạy thủ công và đính kèm EXE vào Release khi push tag `v*`. Các hướng dẫn dưới đây dành cho người phát triển chạy trực tiếp từ mã nguồn.
 
 ## Tính năng

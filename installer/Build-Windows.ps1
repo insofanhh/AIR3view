@@ -53,6 +53,7 @@ Get-ChildItem -LiteralPath (Join-Path $root 'backend') -Filter '*.py' -File |
 New-Item -ItemType Directory -Force -Path (Join-Path $stage 'frontend') | Out-Null
 Copy-Item -LiteralPath (Join-Path $root 'frontend\dist') -Destination (Join-Path $stage 'frontend\dist') -Recurse
 Copy-Item -LiteralPath (Join-Path $root 'run.py') -Destination $stage
+Set-Content -LiteralPath (Join-Path $stage 'APP_VERSION') -Value $Version -Encoding ascii
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'launcher.py') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'THIRD_PARTY.md') -Destination $stage
 
