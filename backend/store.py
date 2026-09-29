@@ -29,7 +29,23 @@ def init():
         db.execute('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, project_id TEXT, kind TEXT, state TEXT, progress REAL, message TEXT, error TEXT, created REAL, cancelled INTEGER DEFAULT 0)')
         if 'options' not in {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}:
             db.execute("ALTER TABLE jobs ADD COLUMN options TEXT NOT NULL DEFAULT '{}'")
-        db.execute("UPDATE jobs SET state='interrupted', message='Ứng dụng đã khởi động lại. Chọn Thử lại để tiếp tục.' WHERE state IN ('running','queued')")
+        db.execute("UPDATE jobs SET state='interrupted', message='Ứng dụng đã khởi động lại. Chọn Thử lại để tiếp tục.' WHERE state='running'")
+        db.execute('CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, created REAL NOT NULL, settings TEXT NOT NULL)')
+        db.execute('CREATE TABLE IF NOT EXISTS batch_items (id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, position INTEGER NOT NULL, project_id TEXT NOT NULL, url TEXT NOT NULL, state TEXT NOT NULL, job_id TEXT, error TEXT NOT NULL DEFAULT \'\', created REAL NOT NULL)')
+        batch_columns = {row['name'] for row in db.execute('PRAGMA table_info(batch_items)')}
+        if 'title' not in batch_columns:
+            db.execute("ALTER TABLE batch_items ADD COLUMN title TEXT NOT NULL DEFAULT ''")
+        if 'exports' not in batch_columns:
+            db.execute("ALTER TABLE batch_items ADD COLUMN exports TEXT NOT NULL DEFAULT '[]'")
+        if 'attempts' not in batch_columns:
+            db.execute('ALTER TABLE batch_items ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0')
+        if 'ready_at' not in batch_columns:
+            db.execute('ALTER TABLE batch_items ADD COLUMN ready_at REAL NOT NULL DEFAULT 0')
+        if 'export_job_id' not in batch_columns:
+            db.execute('ALTER TABLE batch_items ADD COLUMN export_job_id TEXT')
+        if 'export_folder' not in batch_columns:
+            db.execute("ALTER TABLE batch_items ADD COLUMN export_folder TEXT NOT NULL DEFAULT ''")
+        db.execute('CREATE INDEX IF NOT EXISTS batch_items_batch ON batch_items(batch_id, position)')
         for row in db.execute('SELECT id, body FROM projects').fetchall():
             project = json.loads(row['body'])
             settings = project.setdefault('settings', {})
@@ -123,7 +139,10 @@ def jobs(pid):
 
 
 def busy(pid):
-    return any(j['state'] in ('queued', 'running') for j in jobs(pid))
+    if any(j['state'] in ('queued', 'running') for j in jobs(pid)):
+        return True
+    with conn() as db:
+        return bool(db.execute("SELECT 1 FROM batch_items WHERE project_id=? AND state IN ('pending','queued','running')", (pid,)).fetchone())
 
 
 def new_job(pid, kind, options=None):
@@ -153,6 +172,8 @@ def delete_project(pid, revision):
             raise RuntimeError('Dự án vừa thay đổi. Đóng hộp thoại và chọn Xóa lại để xác nhận bản mới nhất.')
         if db.execute("SELECT 1 FROM jobs WHERE project_id=? AND state IN ('queued','running')",(pid,)).fetchone():
             raise RuntimeError('Dự án đang xử lý. Hãy đợi tác vụ hoàn tất hoặc hủy trước khi xóa.')
+        if db.execute("SELECT 1 FROM batch_items WHERE project_id=? AND state IN ('pending','queued','running')", (pid,)).fetchone():
+            raise RuntimeError('Video thuộc lô đang chờ xử lý. Hãy hủy tác vụ trong bảng lô trước khi xóa.')
         root=DATA.resolve()
         directory=root/pid
         def verify(path):
@@ -174,6 +195,7 @@ def delete_project(pid, revision):
         # Keep the record if filesystem cleanup fails, so deletion can retry.
         db.execute('DELETE FROM jobs WHERE project_id=?',(pid,))
         db.execute('DELETE FROM projects WHERE id=?',(pid,))
+        db.execute("UPDATE batch_items SET title='Dự án đã xóa',exports='[]',job_id=NULL,state='deleted' WHERE project_id=?", (pid,))
         db.execute('UPDATE preferences SET source_project_id=NULL WHERE source_project_id=?',(pid,))
     return {'deleted':True,'id':pid}
 
@@ -184,6 +206,13 @@ def update_job(jid, **values):
         raise ValueError('Invalid job update')
     with conn() as db:
         db.execute('UPDATE jobs SET ' + ','.join(k + '=?' for k in values) + ' WHERE id=?', [*values.values(), jid])
+
+
+def claim_job(jid):
+    """Ensure only one worker executes a queued job, including after recovery."""
+    with conn() as db:
+        result = db.execute("UPDATE jobs SET state='running',message='Đang bắt đầu…' WHERE id=? AND state='queued'", (jid,))
+        return result.rowcount == 1
 
 
 def asset(pid, relative):

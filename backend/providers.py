@@ -15,7 +15,7 @@ from .media import NO_WINDOW, probe, transcribe
 from .models import AnalysisAnswer, TranslationAnswer
 from .voice_repair import (DurationMismatchError, RepairBudget,
                             duration_bounds, duration_is_acceptable,
-                            repair_text, NarrationReply, VOICE_REPAIR_VERSION)
+                            reaction_tail_gap, repair_text, NarrationReply, VOICE_REPAIR_VERSION)
 
 SESSION_KEY = ''
 GEMINI_SESSION_KEY = ''
@@ -578,15 +578,16 @@ def _request_voice_audio(client, params, endpoint, report, check, progress, labe
     return Path(audio)
 
 
-def generate_voice_audio(client, params, endpoint, destination, report, check, progress, label, target_duration=0, speed=1, engine='OmniVoice', stable_speed=None):
+def generate_voice_audio(client, params, endpoint, destination, report, check, progress, label, target_duration=0, speed=1, engine='OmniVoice', stable_speed=None, tail_gap=0):
     from .media import run, FFMPEG
     # Generate once. Repeating the same text cannot fix a deterministic
     # duration error; the caller's bounded loop rewrites only this narration.
     audio = _request_voice_audio(client, params, endpoint, report, check, progress, label, engine)
-    return fit_voice_audio(audio,destination,check,target_duration,speed,engine,stable_speed)
+    return fit_voice_audio(audio,destination,check,target_duration,speed,engine,stable_speed,tail_gap=tail_gap)
 
 
-def fit_voice_audio(audio,destination,check,target_duration=0,speed=1,engine='OmniVoice',stable_speed=None):
+def fit_voice_audio(audio,destination,check,target_duration=0,speed=1,engine='OmniVoice',stable_speed=None,
+                    tail_gap=0):
     from .media import run, FFMPEG
     measured = probe(audio)['duration']
     if measured <= 0:
@@ -596,13 +597,16 @@ def fit_voice_audio(audio,destination,check,target_duration=0,speed=1,engine='Om
         # VieNeu needs the global speed applied locally; OmniVoice received
         # sp already. Only +/-5% around that fixed pace is permitted.
         lower, upper = .95*stable_speed, 1.05*stable_speed
-    if target_duration and not lower <= measured / target_duration <= upper:
+    if target_duration and (measured / target_duration > upper or
+            (measured / target_duration < lower and target_duration-measured/lower > tail_gap)):
         raise DurationMismatchError(engine, measured/(stable_speed or 1), target_duration,audio_path=audio)
     destination.parent.mkdir(exist_ok=True)
     temporary = destination.with_suffix('.tmp.wav')
     args = [FFMPEG, '-y', '-i', audio]
     if target_duration:
-        factor = probe(audio)['duration'] / target_duration
+        # Keep the narrator within the fixed pace band. A brief unvoiced tail
+        # leaves room for source ambience instead of inventing filler words.
+        factor = max(lower, measured / target_duration) if tail_gap else measured / target_duration
         args += ['-af', f'atempo={factor:.8f}']
     elif speed != 1:
         args += ['-af', f'atempo={speed:.8f}']
@@ -610,7 +614,7 @@ def fit_voice_audio(audio,destination,check,target_duration=0,speed=1,engine='Om
     final_duration = probe(temporary)['duration']
     if final_duration <= 0:
         raise RuntimeError(f'{engine} trả audio rỗng.')
-    if target_duration and not duration_is_acceptable(final_duration, target_duration):
+    if target_duration and not duration_is_acceptable(final_duration, target_duration, tail_gap=tail_gap):
         raise DurationMismatchError(engine, measured/(stable_speed or 1), target_duration, stage='điều chỉnh',audio_path=audio)
     check()
     temporary.replace(destination)
@@ -710,7 +714,8 @@ def synthesize(project, report, check, only_id=None):
             try:
                 if cached_audio:
                     cached_duration = probe(destination)['duration']
-                    if target and not duration_is_acceptable(cached_duration, target):
+                    if target and not duration_is_acceptable(cached_duration, target,
+                                                               tail_gap=reaction_tail_gap(settings,target)):
                         raise DurationMismatchError(engine, cached_duration, target, stage='cache')
                     if narration.get('audio_hash') == fingerprint and narration.get('caption_version') == 4:
                         # The entire narration, including alignment, is done;
@@ -723,7 +728,8 @@ def synthesize(project, report, check, only_id=None):
                 if not cached_audio:
                     if settings.get('production_workflow')=='plan_first' and raw_cached.is_file():
                         fit_metrics=fit_voice_audio(raw_cached,destination,check,target,settings['voice_speed'],engine,
-                                                    settings['voice_speed'] if engine=='VieNeu' else 1)
+                                                    settings['voice_speed'] if engine=='VieNeu' else 1,
+                                                    tail_gap=reaction_tail_gap(settings,target))
                         break
                     report(5 + 80 * i / len(pending), f'{engine} tạo giọng {i+1}/{len(pending)}…')
                     if engine == 'VieNeu':
@@ -732,7 +738,8 @@ def synthesize(project, report, check, only_id=None):
                                          reference=reference_data, progress=5 + 80 * i / len(pending))
                         fit_metrics = fit_voice_audio(audio, destination, check,
                                              target_duration=target, speed=settings['voice_speed'], engine='VieNeu',
-                                             **({'stable_speed':settings['voice_speed']} if settings.get('production_workflow')=='plan_first' else {}))
+                                             **({'stable_speed':settings['voice_speed']} if settings.get('production_workflow')=='plan_first' else {}),
+                                             tail_gap=reaction_tail_gap(settings,target))
                     else:
                         if client is None:
                             client = Client(settings['omnivoice_url'], verbose=False, download_files=str(folder / 'voice-downloads'))
@@ -751,7 +758,8 @@ def synthesize(project, report, check, only_id=None):
                                       instruct=settings['voice_instruct'] if settings['voice_mode'] == 'clone' else '')
                         fit_metrics = generate_voice_audio(client, common, '/_clone_fn', destination, report,
                                              check, 5 + 80 * i / len(pending), f'OmniVoice {i+1}/{len(pending)}', target_duration=target,
-                                             **({'stable_speed':1} if settings.get('production_workflow')=='plan_first' else {}))
+                                             **({'stable_speed':1} if settings.get('production_workflow')=='plan_first' else {}),
+                                             tail_gap=reaction_tail_gap(settings,target))
                 break
             except DurationMismatchError as mismatch:
                 # Older hand-authored narrations may lack evidence/segment_id;

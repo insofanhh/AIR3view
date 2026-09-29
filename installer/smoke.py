@@ -19,10 +19,12 @@ def main():
     assert (root / 'tools' / 'codex.exe').is_file()
     assert (root / 'APP_VERSION').is_file()
     from backend import vieneu
+    import openpyxl
     from backend.media import filter_complex_file_option
     from backend.vieneu_onnx_files import install_sdk_fetch_hook
 
     assert vieneu.status()['ok'], 'VieNeu SDK missing from installer'
+    assert openpyxl.__version__, 'Excel import dependency missing from installer'
     assert filter_complex_file_option(str(root / 'tools' / 'ffmpeg.exe')) in ('-/filter_complex', '-filter_complex_script')
     with tempfile.TemporaryDirectory() as data:
         install_sdk_fetch_hook(Path(data))
@@ -63,6 +65,11 @@ def main():
                     assert json.load(response)['ok']
                 with urlopen(f'http://127.0.0.1:{port}/', timeout=5) as response:
                     assert b'AIR3view' in response.read()
+                with urlopen(f'http://127.0.0.1:{port}/api/batches/template', timeout=5) as response:
+                    assert response.read(2) == b'PK', 'Excel template endpoint failed'
+                for path in ('/api/batches/defaults', '/api/batches'):
+                    with urlopen(f'http://127.0.0.1:{port}{path}', timeout=5) as response:
+                        assert response.status == 200, f'Batch endpoint missing: {path}'
             finally:
                 process.terminate()
                 process.wait(timeout=15)

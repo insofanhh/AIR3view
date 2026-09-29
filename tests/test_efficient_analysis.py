@@ -161,9 +161,49 @@ def test_repair_is_bounded_and_quarantines_provider_failure(tmp_path, monkeypatc
         efficient_analysis._call_evidence('Prompt', [], settings, tmp_path, lambda: None,
                                          stage, 'key', 127, 751, 751,
                                          {'calls': 0, 'cache_hits': 0, 'images': 0})
-    assert len(calls) == 2 and 'scenes[0].start=0' in calls[1]
+    assert len(calls) == 3 and 'scenes[0].start=0' in calls[1]
+    assert 'FINAL EVIDENCE RETRY' in calls[2]
     assert not (stage / 'key.json').exists()
-    assert len(list(folder.glob('*.invalid.json'))) == 2
+    assert len(list(folder.glob('*.invalid.json'))) == 3
+
+
+def test_invalid_point_does_not_discard_valid_observation(tmp_path, monkeypatch):
+    from backend import providers
+    settings = {'provider': 'gemini', 'model': 'test'}
+    stage = tmp_path / 'stages'
+    stage.mkdir()
+    valid = evidence(150, 151)['scenes'][0]
+    invalid = evidence(160, 159)['scenes'][0]
+    calls = []
+    def answer(*args, **kwargs):
+        calls.append(1)
+        return {'scenes': [valid, invalid], 'summary': 'Do not trust this summary', 'uncertainties': []}
+    monkeypatch.setattr(providers, 'ask_ai', answer)
+    stats = {'calls': 0, 'cache_hits': 0, 'images': 0}
+    result = efficient_analysis._call_evidence('Prompt', [], settings, tmp_path, lambda: None,
+                                                stage, 'key', 127, 200, 200, stats, [150])
+    assert len(calls) == 2
+    assert result['scenes'] == [efficient_analysis._validate_answer(
+        {'scenes': [valid], 'summary': '', 'uncertainties': []}, 127, 200, 200, [150])['scenes'][0]]
+    assert 'Do not trust' not in result['summary']
+    assert stats['discarded_scenes'] == 1
+
+
+def test_focused_evidence_retry_uses_only_supplied_frame_time(tmp_path, monkeypatch):
+    from backend import providers
+    stage = tmp_path / 'stages'
+    stage.mkdir()
+    calls = []
+    def answer(prompt, *args, **kwargs):
+        calls.append(prompt)
+        return evidence(150.0, 150.0) if len(calls) < 3 else evidence(150.067, 150.067)
+    monkeypatch.setattr(providers, 'ask_ai', answer)
+    result = efficient_analysis._call_evidence('Prompt', [], {'provider': 'gemini', 'model': 'test'},
+                                                tmp_path, lambda: None, stage, 'key', 127, 200, 200,
+                                                {'calls': 0, 'cache_hits': 0, 'images': 0}, [150.067])
+    assert len(calls) == 3
+    assert '150.067' in calls[-1]
+    assert result['scenes'][0]['point'] is True
 
 
 def test_wire_schema_requires_all_scene_fields():

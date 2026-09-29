@@ -11,3 +11,4 @@ yt-dlp[default]==2026.8.19
 faster-whisper==1.2.1
 gradio-client==2.7.1
 vieneu==3.7.1
+openpyxl==3.1.5

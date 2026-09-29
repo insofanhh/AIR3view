@@ -202,7 +202,7 @@ def apply(project):
     if changed:
         old_settings = _normalized(project['settings'])
         export_only = all(updated_settings[key] == old_settings[key]
-                          for key in old_settings if key not in {'export_mode', 'export_part_count'})
+                          for key in old_settings if key not in {'export_mode', 'export_part_count', 'export_drive', 'export_directory'})
         project['settings'] = updated_settings
         if not export_only:
             project['exports'] = []

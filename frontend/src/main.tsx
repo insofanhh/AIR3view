@@ -7,12 +7,14 @@ import { NumberInput } from './NumberInput';
 import { DurationControls } from './DurationControls';
 import { budgetSummary, durationBudget } from './durationBudget';
 import { GeminiModelPicker } from './GeminiModelPicker';
+import { BatchWorkspace } from './BatchWorkspace';
+import { ExportDirectoryPicker } from './ExportDirectoryPicker';
 import { canAutoRetryDuration, isRetryableDurationFailure, MAX_DURATION_AUTO_RETRIES } from './autoRetry';
 
 type WordTiming = {text:string;start:number;end:number};
 type Cue = { words?:WordTiming[]; id:string; start:number; end:number; text:string; speaker:string };
 type Narration = { section?:'hook'|'opening'|'development'|'ending'; segment_id?:string; part?:number; id:string; start:number; text:string; enabled:boolean; evidence:string; audio:string; audio_hash:string; duration:number; cues:Cue[] };
-type Project = { shared_voice?:{audio:string;text:string}|null; preview?:{file:string;version:string}|null; story_plan?:any; id:string; name:string; revision:number; source:any; settings:Record<string,any>; metadata:Record<string,any>; frames:{time:number;file:string}[]; scenes:any[]; transcript:Cue[]; narrations:Narration[]; hooks:any[]; exports:any[]; preview_exports?:any[]; warnings:string[]; updated:number };
+type Project = { batch_id?:string; export_folder?:string; shared_voice?:{audio:string;text:string}|null; preview?:{file:string;version:string}|null; story_plan?:any; id:string; name:string; revision:number; source:any; settings:Record<string,any>; metadata:Record<string,any>; frames:{time:number;file:string}[]; scenes:any[]; transcript:Cue[]; narrations:Narration[]; hooks:any[]; exports:any[]; preview_exports?:any[]; warnings:string[]; updated:number };
 type Timeline = { source_mutes?:{start:number;end:number}[]; original_audio?:{start:number;end:number}[]; narration_mix?:{ai_ratio:number;original_ratio:number}; retention?:{requested_ratio:number;actual_ratio:number;available_seconds:number;shortfall_seconds:number}; planned?:boolean; clips:any[]; voices:any[]; cues:Cue[]; parts:any[]; duration:number; warnings:string[] };
 type Job = { id:string; kind:string; state:string; progress:number; message:string; error:string };
 type KeyResult = { provider:'openai'|'gemini'; configured:boolean; storage:'local_encrypted'; source?:'local_encrypted'|'environment'|'none' };
@@ -34,6 +36,8 @@ function Toggle({label,value,onChange}:{label:string;value:boolean;onChange:(x:b
 
 function App(){
   const [projects,setProjects]=useState<Project[]>([]),[p,setP]=useState<Project|null>(null),[tl,setTl]=useState<Timeline>(emptyTimeline),[jobs,setJobs]=useState<Job[]>([]);
+  const [batchOpen,setBatchOpen]=useState(false);
+  const [exportStorage,setExportStorage]=useState<{default:string}>({default:''});
   const [health,setHealth]=useState<any>({}),[omni,setOmni]=useState<boolean|null>(null),[tab,setTab]=useState('source'),[panel,setPanel]=useState('output');
   const [updateInfo,setUpdateInfo]=useState<UpdateStatus|null>(null),[checkingUpdate,setCheckingUpdate]=useState(false),[dismissedUpdate,setDismissedUpdate]=useState(()=>{try{return localStorage.getItem('air3view-dismissed-update')||'';}catch{return '';}});
   const [importOpen,setImportOpen]=useState(false),[exportOpen,setExportOpen]=useState(false),[url,setUrl]=useState(''),[uploading,setUploading]=useState(false),[uploadPercent,setUploadPercent]=useState(0);
@@ -65,6 +69,7 @@ function App(){
   }
   const refreshList=()=>api<Project[]>('/projects').then(setProjects).catch(notify);
   useEffect(()=>{refreshList();const check=()=>{api('/health').then(setHealth).catch(()=>{});};check();const id=setInterval(check,30000);return()=>clearInterval(id);},[]);
+  useEffect(()=>{api<{default:string}>('/export/storage').then(setExportStorage).catch(()=>{});},[]);
   async function checkUpdate(manual=false){
     if(manual)setCheckingUpdate(true);
     try{
@@ -90,7 +95,7 @@ function App(){
     try {
       if(options.persistCurrent!==false)await prepareForTransition();
       let next:Project,applyNotice='',applyError='';
-      if(options.applyPreferences===false)next=await api<Project>('/projects/'+project.id);
+      if(options.applyPreferences===false||project.batch_id)next=await api<Project>('/projects/'+project.id);
       else try{next=await api<Project>('/projects/'+project.id+'/apply-preferences',{method:'POST'});}catch(e){if(e instanceof ApiError&&e.status===409){next=await api<Project>('/projects/'+project.id);applyNotice='Dự án đang xử lý; cài đặt dùng chung sẽ áp dụng khi bạn mở lại sau khi hoàn tất.';}else if(e instanceof ApiError&&e.status===422){next=await api<Project>('/projects/'+project.id);applyError='Không áp dụng được cài đặt dùng chung: '+e.message;}else throw e;}
       const [nextJobs,nextTimeline]=await Promise.all([api<Job[]>('/projects/'+next.id+'/jobs'),api<Timeline>('/projects/'+next.id+'/timeline')]);
       if(request!==switchVersion.current)return;
@@ -168,6 +173,7 @@ function App(){
   }
   const setting=(name:string,value:any)=>change(d=>{d.settings[name]=value;});
   const exportSetting=(name:string,value:any)=>change(d=>{d.settings[name]=value;},true);
+  const exportDirectory=(directory:string)=>change(d=>{d.settings.export_directory=directory;d.settings.export_drive='';},true);
   const number=(name:string,e:React.ChangeEvent<HTMLInputElement>)=>{if(e.target.value!=='')setting(name,Number(e.target.value));};
   async function runJob(kind:string, automatic=false){
     if(retryInFlight.current)return;
@@ -228,17 +234,18 @@ function App(){
       <div className="workspace-label">KHÔNG GIAN LÀM VIỆC</div>
       <button className="nav-item active" disabled={switching} onClick={leaveProject}><Layers size={18}/> Dự án của bạn <span className="count">{projects.length}</span></button>
       <button className="nav-item" onClick={()=>setImportOpen(true)}><Plus size={18}/> Nhập video mới</button>
+      <button className="nav-item" onClick={()=>setBatchOpen(true)}><Layers size={18}/> Sản xuất hàng loạt</button>
       <div className="recent-heading">DỰ ÁN GẦN ĐÂY</div>
       <div className="recent-list">{projects.slice(0,8).map(x=><button key={x.id} disabled={switching} className={'recent-project '+(p?.id===x.id?'selected':'')} onClick={()=>choose(x)}><span className="project-mini">{x.frames[0]?<img src={media(x,x.frames[0].file)}/>:<Film size={15}/>}</span><span>{x.name}<small>{x.metadata.duration?clock(x.metadata.duration)+' nguồn':'Đang nhập nguồn'}</small></span></button>)}</div>
       <div className="rail-bottom"><div className="local-badge"><i/> Chạy trên máy của bạn</div><button onClick={()=>{if(p)setPanel('connect');else setNotice('Tạo hoặc mở dự án để thiết lập kết nối AI.');}}><Settings2 size={17}/> Kết nối & cài đặt</button><button onClick={()=>void checkUpdate(true)} disabled={checkingUpdate}><RefreshCw size={15} className={checkingUpdate?'spin':''}/> Kiểm tra cập nhật</button><span className="version">AIR3view Studio <b>v{health.version||'…'}</b></span></div>
     </aside>
     <main className="main">
-      <header className="topbar"><div className="breadcrumbs"><span>Workspace</span><ChevronRight size={14}/><strong>{p?'Trình biên tập':'Dự án của bạn'}</strong></div><div className="top-actions"><span className={'connection '+(omni?'online':'')}><i/>{ttsProvider==='vieneu'?(omni?'VieNeu SDK đã cài':'Kiểm tra VieNeu SDK'):(omni?'OmniVoice đã kết nối':'OmniVoice chưa kết nối')}</span><div className="avatar">A</div></div></header>
+      <header className="topbar"><div className="breadcrumbs"><span>Workspace</span><ChevronRight size={14}/><strong>{batchOpen?'Sản xuất hàng loạt':p?'Trình biên tập':'Dự án của bạn'}</strong></div><div className="top-actions"><span className={'connection '+(omni?'online':'')}><i/>{ttsProvider==='vieneu'?(omni?'VieNeu SDK đã cài':'Kiểm tra VieNeu SDK'):(omni?'OmniVoice đã kết nối':'OmniVoice chưa kết nối')}</span><div className="avatar">A</div></div></header>
       {updateInfo?.available&&updateInfo.latest_version!==dismissedUpdate&&updateInfo.release_url&&<div className="update-banner" role="status"><div><strong>Đã có AIR3view v{updateInfo.latest_version}</strong><span>Bạn đang dùng v{updateInfo.current_version}. Tải bộ cài mới để cập nhật; dự án đã lưu được giữ nguyên.</span></div><a href={updateInfo.release_url} target="_blank" rel="noopener noreferrer">Xem bản cập nhật <ArrowRight size={14}/></a><IconButton label="Ẩn thông báo cập nhật" onClick={()=>{const version=updateInfo.latest_version||'';setDismissedUpdate(version);try{localStorage.setItem('air3view-dismissed-update',version);}catch{}}}><X size={16}/></IconButton></div>}
       {error&&<div className="error-banner" role="alert"><span>{error}</span><IconButton label="Đóng thông báo" onClick={()=>setError('')}><X size={16}/></IconButton></div>}
       {notice&&<div className="toast" role="status"><Check size={16}/>{notice}</div>}
-      {!p?<section className="library">
-        <div className="library-header"><div className="eyebrow"><span/> TỪ CÂU CHUYỆN ĐẾN VIDEO</div><h1>Mỗi video, một câu chuyện mới.</h1><p>Biến video dài thành những phần review cuốn hút.<br/>AI hỗ trợ kể chuyện. Bạn quyết định bản dựng cuối cùng.</p><button className="primary large" onClick={()=>setImportOpen(true)}><Plus size={18}/> Tạo dự án mới</button></div>
+      {batchOpen?<BatchWorkspace projects={projects} onBack={()=>{setBatchOpen(false);void refreshList();}} onOpen={id=>{setBatchOpen(false);api<Project>('/projects/'+id).then(project=>{void refreshList();void choose(project,{applyPreferences:false});}).catch(notify);}}/>:!p?<section className="library">
+        <div className="library-header"><div className="eyebrow"><span/> TỪ CÂU CHUYỆN ĐẾN VIDEO</div><h1>Mỗi video, một câu chuyện mới.</h1><p>Biến video dài thành những phần review cuốn hút.<br/>AI hỗ trợ kể chuyện. Bạn quyết định bản dựng cuối cùng.</p><button className="primary large" onClick={()=>setImportOpen(true)}><Plus size={18}/> Tạo dự án mới</button><button className="secondary" onClick={()=>setBatchOpen(true)}><Layers size={16}/> Sản xuất hàng loạt</button></div>
         <div className="hero-art" aria-hidden="true"><div className="orbit one"/><div className="orbit two"/><div className="mini-preview"><span className="art-title">A NEW<br/><b>PERSPECTIVE.</b></span><div className="art-landscape"><div/><Play size={26} fill="white"/></div><span className="art-sub">Your story. Reimagined.</span><span className="art-part">PART 01</span></div><div className="float-card"><Sparkles size={18}/><div>AI storytelling<small>Hình ảnh · Giọng đọc · Phụ đề</small></div></div><div className="wave-card">{Array.from({length:23},(_,i)=><i key={i} style={{height:8+Math.abs(Math.sin(i*1.3))*26}}/>)}</div></div>
         <div className="pipeline-strip"><span><Link2/> Nhập nguồn</span><ArrowRight/><span><Sparkles/> AI biên kịch</span><ArrowRight/><span><Mic/> Giọng đọc</span><ArrowRight/><span><Clapperboard/> Dựng & xuất</span></div>
         <div className="section-heading"><h2>Dự án của bạn <span>{projects.length}</span></h2><span>Lưu trực tiếp trên máy</span></div>
@@ -280,13 +287,15 @@ function App(){
       <p>Video hoàn chỉnh {clock(tl.duration)} · MP4 · 1080×1920 · 30 fps</p>
       <Toggle label="Xuất theo phần" value={s.export_mode==='parts'} onChange={enabled=>exportSetting('export_mode',enabled?'parts':'single')}/>
       {s.export_mode==='parts'&&<Field label="Số phần" hint="Chia đều video đã hoàn thiện theo khung hình; mỗi phần có hình, tiếng và phụ đề riêng."><NumberInput integer aria-label="Số phần xuất video" min={2} max={100} value={exportCount} onChange={value=>exportSetting('export_part_count',value)}/></Field>}
+      <ExportDirectoryPicker directory={s.export_directory||(s.export_drive?`${s.export_drive}\\AIR3view Exports`:'')} defaultDirectory={exportStorage.default} onChange={exportDirectory} disabled={busy}/>
       {tl.planned===false&&<p>Chưa có bản chọn cảnh phù hợp cấu hình mới. Vào Đầu ra rồi bấm Chạy toàn bộ.</p>}
       {selectedExport&&<video className="export-video" src={selectedExport} controls autoPlay/>}
       <div className="export-parts">{plannedExportParts.map(part=><div key={part.index}><span><Film size={16}/>{exportCount===1?'Video hoàn chỉnh':`Phần ${String(part.index).padStart(2,'0')}`}</span><span>{clock(part.start)} → {clock(part.end)}</span><strong>{part.duration.toFixed(2)}s</strong></div>)}</div>
       {tl.warnings.length>0&&<div className="export-warnings">{tl.warnings.map((w,i)=><p key={i}>{w}</p>)}</div>}
-      <button className="primary full" disabled={busy||!ready||!s.output_mode||tl.planned===false||exportFrames<exportCount*30} onClick={()=>{setExportOpen(false);runJob('render');}}><Download size={17}/> {exportCount===1?'Dựng & xuất một video':`Dựng & xuất ${exportCount} phần`}</button>
+      <button className="primary full" disabled={busy||!ready||!s.output_mode||tl.planned===false||exportFrames<exportCount*30} onClick={()=>{setExportOpen(false);runJob('export');}}><Download size={17}/> {exportCount===1?'Dựng & xuất một video':`Dựng & xuất ${exportCount} phần`}</button>
       {exportFrames<exportCount*30&&<p className="duration-warning">Mỗi phần cần ít nhất 1 giây. Giảm số phần xuất.</p>}
-      {outputFiles.length>0&&<><h4 className="download-heading">Các file đã dựng · lưu trong thư mục dự án</h4>{outputFiles.map((x,i)=><div className="download-row" key={i}><button onClick={()=>setSelectedExport(media(p,x.file))}><Play size={14}/> {x.preview?'Xem thử '+clock(x.preview_start??0):p.exports.length>1?'Phần '+x.part:'Video hoàn chỉnh'} · {x.width}×{x.height}</button><a href={media(p,x.file)} download>MP4</a><a href={media(p,x.srt)} download>SRT</a><a href={media(p,x.ass)} download>ASS</a></div>)}</>}
+      {p.export_folder&&<p className="help-text">Thư mục xuất gần nhất: {p.export_folder}</p>}
+      {outputFiles.length>0&&<><h4 className="download-heading">Các file đã dựng · bản sao trong thư mục dự án</h4>{outputFiles.map((x,i)=><div className="download-row" key={i}><button onClick={()=>setSelectedExport(media(p,x.file))}><Play size={14}/> {x.preview?'Xem thử '+clock(x.preview_start??0):p.exports.length>1?'Phần '+x.part:'Video hoàn chỉnh'} · {x.width}×{x.height}</button><a href={media(p,x.file)} download>MP4</a><a href={media(p,x.srt)} download>SRT</a><a href={media(p,x.ass)} download>ASS</a></div>)}</>}
     </section></div>}
   </div>;
 }

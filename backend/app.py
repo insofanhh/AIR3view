@@ -6,16 +6,18 @@ import re
 import shutil
 import threading
 import uuid
-from contextlib import asynccontextmanager
+from datetime import datetime
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 import requests
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from . import store, providers, preferences, updates
+from . import store, providers, preferences, updates, batches, export_files
 from .models import Model, ProjectEdit, Settings
 from pydantic import Field
 from .media import prepare, transcribe, parse_srt, Cancelled, FFMPEG
@@ -25,6 +27,30 @@ from .power import keep_awake
 
 QUEUE = queue.Queue()
 STOP = threading.Event()
+PREPARE_LIMIT = threading.Semaphore(2)
+AI_LIMIT = threading.Semaphore(1)
+VOICE_LIMIT = threading.Semaphore(1)
+RENDER_LIMIT = threading.Semaphore(1)
+
+
+def overall_progress(kind, stage, progress, previous=0):
+    if kind != 'all':
+        return progress
+    base, span = {'prepare': (0, 15), 'analyze': (15, 40),
+                  'localize': (55, 5), 'voice': (60, 20),
+                  'render': (80, 19)}[stage]
+    return max(previous, min(99, base + span * max(0, min(100, progress)) / 100))
+
+
+@contextmanager
+def stage_slot(semaphore, check):
+    while not semaphore.acquire(timeout=.2):
+        check()
+    try:
+        check()
+        yield
+    finally:
+        semaphore.release()
 
 
 def prepare_job_story(project, kind, report, check):
@@ -42,24 +68,35 @@ def work():
             jid = QUEUE.get(timeout=.5)
         except queue.Empty:
             continue
+        stage = 'prepare'
+        last_progress = 0
+        kind = None
         def check():
             if STOP.is_set() or store.job(jid)['cancelled']:
                 raise Cancelled('Đã hủy tác vụ; dữ liệu hoàn thành vẫn được giữ.')
         def report(progress, message):
+            nonlocal last_progress
             check()
+            progress = overall_progress(kind, stage, progress, last_progress)
+            last_progress = progress
             store.update_job(jid, progress=progress, message=message)
         try:
             with keep_awake():
                 record = store.job(jid)
+                # Recovery may enqueue the same id twice; only one worker can
+                # claim it, so a completed video is never rendered again.
+                if not store.claim_job(jid):
+                    continue
                 check()
-                store.update_job(jid, state='running', message='Đang bắt đầu…')
                 project = store.read(record['project_id'])
                 kind = record['kind']
                 if kind == 'all':
                     from .story import output_budget
                     output_budget(project['settings'])
                 if kind == 'prepare' or (kind == 'all' and not project.get('frames')):
-                    project = prepare(project, report, check)
+                    stage = 'prepare'
+                    with stage_slot(PREPARE_LIMIT, check):
+                        project = prepare(project, report, check)
                 if kind in ('transcribe',):
                     if not project.get('metadata', {}).get('has_audio'):
                         raise ValueError('Nguồn không có audio để nhận dạng.')
@@ -70,9 +107,13 @@ def work():
                     project['exports'] = []
                     store.save(project)
                 if kind in ('analyze', 'all'):
-                    project = prepare_job_story(project, kind, report, check)
+                    stage = 'analyze'
+                    with stage_slot(AI_LIMIT, check):
+                        project = prepare_job_story(project, kind, report, check)
                 if kind in ('localize', 'language', 'analyze', 'all', 'voice') or kind.startswith('voice:'):
-                    project = providers.localize(project, report, check)
+                    stage = 'localize'
+                    with stage_slot(AI_LIMIT, check):
+                        project = providers.localize(project, report, check)
                 if kind in ('voice', 'language', 'all') or kind.startswith('voice:'):
                     if kind == 'all' and not project['narrations']:
                         from .story import source_led
@@ -81,23 +122,49 @@ def work():
                         else:
                             project['warnings'].append('Đoạn quá ngắn để đề xuất lời dẫn; bản dựng chỉ có tiếng gốc. Có thể thêm lời AI thủ công.')
                     else:
-                        project = providers.synthesize(project, report, check, kind.split(':', 1)[1] if ':' in kind else None)
+                        stage = 'voice'
+                        with stage_slot(VOICE_LIMIT, check):
+                            project = providers.synthesize(project, report, check, kind.split(':', 1)[1] if ':' in kind else None)
                 if kind == 'captions':
                     from .captions import refresh
                     project = refresh(project, report, check)
-                if kind in ('render', 'preview', 'all'):
-                    if kind in ('render', 'preview'):
-                        project = providers.prepare_render_audio(project, report, check)
-                    if project['settings'].get('subtitle_highlight', True):
-                        build(project, strict=True)
-                        from .captions import refresh
-                        project = refresh(project, report, check)
-                    options=json.loads(record.get('options') or '{}')
-                    render(project, report, check, preview=kind == 'preview',preview_start=options.get('preview_start',0))
+                if kind in ('render', 'preview', 'all', 'export'):
+                    stage = 'render'
+                    with stage_slot(RENDER_LIMIT, check):
+                        options=json.loads(record.get('options') or '{}')
+                        if kind == 'export':
+                            project['settings'].update(export_mode=options.get('export_mode',project['settings'].get('export_mode','single')),
+                                                       export_part_count=options.get('export_part_count',project['settings'].get('export_part_count',2)),
+                                                       export_drive=options.get('export_drive',project['settings'].get('export_drive','')),
+                                                       export_directory=options.get('export_directory',project['settings'].get('export_directory','')))
+                            project['settings']=Settings.model_validate(project['settings']).model_dump()
+                            store.save(project)
+                        if kind in ('render', 'preview', 'export'):
+                            project = providers.prepare_render_audio(project, report, check)
+                        if project['settings'].get('subtitle_highlight', True):
+                            build(project, strict=True)
+                            from .captions import refresh
+                            project = refresh(project, report, check)
+                        render(project, report, check, preview=kind == 'preview',preview_start=options.get('preview_start',0))
+                        if kind == 'export':
+                            report(99, 'Sao chép MP4 và phụ đề sang thư mục đã chọn…')
+                            published=export_files.publish(project, project['settings'].get('export_drive',''),
+                                                            options.get('batch_id'), check, options.get('export_date'),
+                                                            project['settings'].get('export_directory',''))
+                            project['export_folder']=published['folder']
+                            project['exported_files']=published['files']
+                            store.save(project)
+                            if options.get('batch_id'):
+                                with store.conn() as db:
+                                    db.execute('UPDATE batch_items SET export_folder=? WHERE batch_id=? AND project_id=?',
+                                               (published['folder'],options['batch_id'],project['id']))
                 check()
                 store.update_job(jid, state='completed', progress=100, message='Hoàn tất')
         except Cancelled as e:
-            store.update_job(jid, state='cancelled', message=str(e))
+            if STOP.is_set() and not store.job(jid)['cancelled']:
+                store.update_job(jid, state='interrupted', message='Ứng dụng đã dừng; lô sẽ tự tiếp tục khi mở lại.')
+            else:
+                store.update_job(jid, state='cancelled', message=str(e))
         except Exception as e:
             message = providers.redact(str(e))
             message = re.sub(r'sk-[A-Za-z0-9_-]+', '[KEY]', message)
@@ -110,11 +177,21 @@ def work():
 async def lifespan(app):
     store.init()
     STOP.clear()
-    worker = threading.Thread(target=work, daemon=True, name='air3view-worker')
-    worker.start()
+    with store.conn() as db:
+        queued = [row['id'] for row in db.execute("SELECT id FROM jobs WHERE state='queued' ORDER BY created")]
+    for jid in queued:
+        QUEUE.put(jid)
+    workers = [threading.Thread(target=work, daemon=True, name=f'air3view-worker-{i}') for i in range(2)]
+    for worker in workers:
+        worker.start()
+    scheduler = threading.Thread(target=batches.run_scheduler, args=(STOP, QUEUE.put), daemon=True,
+                                 name='air3view-batch-scheduler')
+    scheduler.start()
     yield
     STOP.set()
-    worker.join(timeout=3)
+    scheduler.join(timeout=3)
+    for worker in workers:
+        worker.join(timeout=3)
     from .vieneu import _runtime
     _runtime.close()
 
@@ -146,6 +223,41 @@ class URLInput(Model):
     url: str
 
 
+class BatchItemInput(Model):
+    url: str
+    title: str = ''
+    settings: dict = Field(default_factory=dict)
+
+
+class BatchInput(Model):
+    name: str = Field(default='Lô video YouTube', max_length=180)
+    items: list[BatchItemInput] = Field(min_length=1, max_length=batches.MAX_ITEMS)
+    settings: Settings
+    source_project_id: str | None = None
+
+
+class BatchPreviewInput(Model):
+    items: list[BatchItemInput] = Field(min_length=1, max_length=batches.MAX_ITEMS)
+    settings: Settings
+
+
+class BatchActionInput(Model):
+    action: Literal['pause', 'resume', 'cancel', 'cancel_item', 'retry']
+    item_id: str | None = None
+
+
+class BatchExportInput(Model):
+    item_id: str | None = None
+    export_mode: Literal['single', 'parts'] = 'single'
+    export_part_count: int = Field(default=2, ge=2, le=100)
+    export_drive: str = Field(default='', pattern=r'^$|^[A-Za-z]:$')
+    export_directory: str = Field(default='', max_length=1024)
+
+
+class FolderPickerInput(Model):
+    initial: str = Field(default='', max_length=1024)
+
+
 class KeyInput(Model):
     provider: Literal['openai', 'gemini'] = 'openai'
     api_key: str
@@ -166,10 +278,19 @@ class DeleteProjectInput(Model):
 
 
 def queue_job(pid, kind, options=None):
-    if kind not in ('prepare', 'transcribe', 'analyze', 'localize', 'language', 'voice', 'captions', 'render', 'preview', 'all') and not re.fullmatch(r'voice:[a-zA-Z0-9_-]+', kind):
+    if kind not in ('prepare', 'transcribe', 'analyze', 'localize', 'language', 'voice', 'captions', 'render', 'preview', 'all', 'export') and not re.fullmatch(r'voice:[a-zA-Z0-9_-]+', kind):
         raise ValueError('Loại tác vụ không hợp lệ.')
+    with store.conn() as db:
+        if db.execute("SELECT 1 FROM batch_items WHERE project_id=? AND state IN ('pending','queued','running')", (pid,)).fetchone():
+            raise ValueError('Video thuộc lô đang chờ xử lý. Hãy quản lý tác vụ trong bảng lô.')
     project = store.read(pid)
-    if kind in ('all', 'analyze', 'render', 'preview'):
+    if kind == 'export' and store.busy(pid):
+        raise ValueError('Dự án đang có tác vụ khác. Đợi hoàn tất rồi xuất video.')
+    if kind == 'export':
+        destination = options or {}
+        export_files.export_root(destination.get('export_drive', project['settings'].get('export_drive', '')),
+                                 destination.get('export_directory', project['settings'].get('export_directory', '')))
+    if kind in ('all', 'analyze', 'render', 'preview', 'export'):
         from .story import output_budget
         output_budget(project['settings'])
     if project['settings'].get('output_mode') and (kind in ('voice', 'language') or kind.startswith('voice:')):
@@ -189,6 +310,16 @@ def editable(pid):
 @app.get('/api/health')
 def health():
     return {'ok': True, 'ffmpeg': bool(shutil.which(FFMPEG) or Path(FFMPEG).is_file()), 'codex': bool(providers.codex_binary()), 'api_key': bool(providers.key()), 'gemini_api_key': bool(providers.key('gemini')), 'openai_key_source': providers.key_source('openai'), 'gemini_key_source': providers.key_source('gemini'), 'version': updates.installed_version(), 'voice_repair_version':providers.VOICE_REPAIR_VERSION}
+
+
+@app.get('/api/export/storage')
+def export_storage():
+    return export_files.storage_options()
+
+
+@app.post('/api/export/pick-directory')
+def choose_export_directory(body: FolderPickerInput):
+    return {'directory': export_files.pick_directory(body.initial)}
 
 
 @app.get('/api/update')
@@ -284,6 +415,112 @@ def list_projects():
 @app.get('/api/preferences')
 def get_preferences():
     return preferences.status()
+
+
+@app.get('/api/batches/defaults')
+def batch_defaults():
+    projects = store.list_projects()
+    if projects:
+        project = projects[0]
+        return {'settings': {**project['settings'], 'title': ''}, 'source_project_id': project['id']}
+    settings = Settings(output_mode='single', narration_style='storytelling', opening_delay=0,
+                        production_workflow='plan_first', duration_min_ratio=.9).model_dump()
+    settings.update(preferences.status()['settings'])
+    settings['voice_reference'] = ''
+    return {'settings': Settings.model_validate(settings).model_dump(), 'source_project_id': None}
+
+
+@app.post('/api/batches/preview')
+def preview_batch(body: BatchPreviewInput):
+    result = []
+    seen = set()
+    for index, item in enumerate(body.items, 1):
+        try:
+            url = batches.canonical_url(item.url)
+            if url in seen:
+                raise ValueError('Link trùng trong danh sách.')
+            if 'voice_reference' in item.settings:
+                raise ValueError('Giọng mẫu dùng cấu hình chung, không đặt đường dẫn riêng cho từng video.')
+            from .story import output_budget
+            normalized = batches.effective_settings(body.settings.model_dump(), item.settings)
+            output_budget(normalized)
+            seen.add(url)
+            result.append({'row': index, 'url': url, 'title': item.title, 'valid': True, 'error': ''})
+        except ValueError as exc:
+            result.append({'row': index, 'url': item.url, 'title': item.title, 'valid': False, 'error': str(exc)})
+    return result
+
+
+@app.post('/api/batches/import-excel')
+async def import_batch_excel(file: UploadFile = File(...)):
+    if Path(file.filename or '').suffix.lower() != '.xlsx':
+        raise ValueError('Chọn file Excel .xlsx.')
+    content = await file.read(2 * 1024 * 1024 + 1)
+    await file.close()
+    return await asyncio.to_thread(batches.parse_excel, content)
+
+
+@app.get('/api/batches/template')
+def batch_excel_template():
+    from io import BytesIO
+    from openpyxl import Workbook
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = 'Videos'
+    sheet.append(['url', 'title', 'summary_minutes', 'editorial_mode', 'hook_enabled',
+                  'export_mode', 'export_part_count'])
+    sheet.append(['https://www.youtube.com/watch?v=EXiQCyqxmSE', 'Video mẫu', 3,
+                  'reaction_cops', False, 'single', 2])
+    stream = BytesIO()
+    workbook.save(stream)
+    stream.seek(0)
+    return StreamingResponse(stream, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                             headers={'Content-Disposition': 'attachment; filename="AIR3view-batch-template.xlsx"'})
+
+
+@app.get('/api/batches')
+def list_batches():
+    return batches.list_batches()
+
+
+@app.post('/api/batches')
+def create_batch(body: BatchInput):
+    return batches.create(body.name, [item.model_dump() for item in body.items],
+                          body.settings.model_dump(), body.source_project_id)
+
+
+@app.get('/api/batches/{batch_id}')
+def get_batch(batch_id: str):
+    return batches.get(batch_id)
+
+
+@app.post('/api/batches/{batch_id}/control')
+def control_batch(batch_id: str, body: BatchActionInput):
+    return batches.control(batch_id, body.action, body.item_id)
+
+
+@app.post('/api/batches/{batch_id}/export')
+def export_batch(batch_id: str, body: BatchExportInput):
+    batch=batches.get(batch_id)
+    selected=[item for item in batch['items'] if body.item_id is None or item['id']==body.item_id]
+    if not selected or (body.item_id is None and len(selected)!=len(batch['items'])):
+        raise ValueError('Không tìm thấy video trong lô.')
+    if any(item['state']!='completed' for item in selected):
+        raise ValueError('Chỉ xuất khi các video đã hoàn tất; xuất cả lô cần mọi video hoàn tất.')
+    export_files.export_root(body.export_drive, body.export_directory)  # Validate destination before queuing work.
+    if any(store.busy(item['project_id']) for item in selected):
+        raise ValueError('Một video đang có tác vụ khác; đợi hoàn tất rồi xuất.')
+    export_date=datetime.now().strftime('%Y-%m-%d')
+    jobs=[]
+    for item in selected:
+        job=queue_job(item['project_id'],'export',{'export_mode':body.export_mode,
+                      'export_part_count':body.export_part_count,'export_drive':body.export_drive,
+                      'export_directory':body.export_directory,
+                      'batch_id':batch_id,'export_date':export_date})
+        with store.conn() as db:
+            db.execute("UPDATE batch_items SET export_job_id=?,export_folder='' WHERE id=?",(job['id'],item['id']))
+        jobs.append(job)
+    return {'jobs':jobs,'batch':batches.get(batch_id)}
 
 
 @app.post('/api/projects/url')
@@ -387,7 +624,7 @@ def edit_project(pid: str, body: ProjectEdit):
         previous_settings = Settings.model_validate(project['settings']).model_dump()
         changed_settings = {key for key, value in incoming['settings'].items()
                             if value != previous_settings.get(key)}
-        export_only = (changed_settings <= {'export_mode', 'export_part_count'}
+        export_only = (changed_settings <= {'export_mode', 'export_part_count', 'export_drive', 'export_directory'}
                        and incoming['name'] == project.get('name', incoming['name'])
                        and incoming['narrations'] == project['narrations']
                        and incoming['transcript'] == project['transcript'])

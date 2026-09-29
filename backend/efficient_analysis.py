@@ -251,6 +251,27 @@ def _quarantine_provider_response(prompt, images, settings, folder):
     _quarantine(folder / 'analysis-cache' / (fingerprint + '.json'))
 
 
+def _verified_scene_subset(raw, start, end, duration, image_times, stats):
+    """Retain independently valid observations; never infer a missing timestamp."""
+    if not isinstance(raw, dict) or not isinstance(raw.get('scenes'), list):
+        return None
+    valid = []
+    for scene in raw['scenes']:
+        try:
+            checked = _validate_answer({'scenes': [scene], 'summary': '', 'uncertainties': []},
+                                       start, end, duration, image_times)
+        except (ValueError, ValidationError, TypeError):
+            continue
+        valid.extend(checked['scenes'])
+    if not valid or len(valid) == len(raw['scenes']):
+        return None
+    stats['discarded_scenes'] = stats.get('discarded_scenes', 0) + len(raw['scenes']) - len(valid)
+    # The model summary may rely on a rejected observation. Rebuild it solely
+    # from observations that passed the original evidence validator.
+    summary = ' '.join(scene['description'] for scene in valid)[:5000]
+    return {'scenes': valid, 'summary': summary, 'uncertainties': []}
+
+
 def _call_evidence(prompt: str, images: list[Path], settings: dict, folder: Path,
                    check, cache: Path, key: str, start: float, end: float,
                    duration: float, stats: dict,
@@ -295,13 +316,34 @@ def _call_evidence(prompt: str, images: list[Path], settings: dict, folder: Path
     repair = (request_prompt + '\nSỬA DUY NHẤT các lỗi evidence sau, trả lại toàn bộ JSON: ' + violations +
               '\nNếu một point/scene không thể chứng minh trong các ảnh hoặc transcript đã gửi, hãy bỏ scene đó; '
               'không bịa mốc, không nới biên, không biến point thành interval.\nLỖI GỐC: ' + str(first_error) +
+              '\nMỐC ẢNH ĐÃ GỬI: ' + json.dumps(image_times or []) +
               '\nBẢN NHÁP: ' + json.dumps(raw, ensure_ascii=False))
-    raw = providers.ask_ai(repair, images, settings, folder, check, response_model=EvidenceAnswer)
+    raw = None
     try:
+        raw = providers.ask_ai(repair, images, settings, folder, check, response_model=EvidenceAnswer)
         result = _validate_answer(raw, start, end, duration, image_times)
-    except ValueError:
+    except (ValueError, ValidationError, TypeError, json.JSONDecodeError) as second_error:
         _quarantine_provider_response(repair, images, settings, folder)
-        raise
+        result = _verified_scene_subset(raw, start, end, duration, image_times, stats)
+        if result is None:
+            # The entire batch is unusable. Retry this batch with a fresh
+            # provider cache key and an explicit list of actual frame times.
+            check()
+            stats['calls'] += 1
+            focused = (request_prompt + '\nFINAL EVIDENCE RETRY: previous JSON was rejected: ' + str(second_error) +
+                       '\nUse only these supplied image timestamps for point observations: ' +
+                       json.dumps(image_times or []) +
+                       '\nUse start < end for intervals proven by source evidence. Omit unverifiable scenes. '
+                       'Return at least one genuine observation if the source supports one.')
+            raw = None
+            try:
+                raw = providers.ask_ai(focused, images, settings, folder, check, response_model=EvidenceAnswer)
+                result = _validate_answer(raw, start, end, duration, image_times)
+            except (ValueError, ValidationError, TypeError, json.JSONDecodeError):
+                _quarantine_provider_response(focused, images, settings, folder)
+                result = _verified_scene_subset(raw, start, end, duration, image_times, stats)
+                if result is None:
+                    raise
     _atomic_json(cache / f'{key}.json', result)
     return result
 

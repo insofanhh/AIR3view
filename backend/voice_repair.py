@@ -10,6 +10,9 @@ from __future__ import annotations
 import re
 import json
 import math
+import logging
+import time
+import uuid
 from pydantic import ValidationError, Field, model_validator, field_validator
 from dataclasses import dataclass
 
@@ -125,7 +128,8 @@ def duration_bounds(engine: str) -> tuple[float, float]:
     return (0.5, 1.5) if engine == "VieNeu" else (0.75, 1.25)
 
 
-def duration_is_acceptable(measured: float, target: float, tolerance: float = 0.03) -> bool:
+def duration_is_acceptable(measured: float, target: float, tolerance: float = 0.03,
+                           tail_gap: float = 0) -> bool:
     if target <= 0:
         return measured > 0
     measured = float(measured)
@@ -133,7 +137,15 @@ def duration_is_acceptable(measured: float, target: float, tolerance: float = 0.
     # Narration must never run beyond its video slot. Keep a small allowance
     # below the target for encoder/probe rounding, but use a tighter upper
     # bound because the slot itself already ends just before the next cut.
-    return target - measured <= 0.08 and measured <= target + tolerance
+    return target - measured <= max(0.08, tail_gap) and measured <= target + tolerance
+
+
+def reaction_tail_gap(settings: dict, target: float) -> float:
+    """Allow a brief natural pause under original audio in Reaction COPS only."""
+    if (settings.get('editorial_mode') != 'reaction_cops' or
+            settings.get('production_workflow', 'plan_first') != 'plan_first' or target <= 0):
+        return 0
+    return min(1.25, target * .2)
 
 
 def _budget_for(text: str, measured: float, target: float) -> tuple[int, int, int]:
@@ -277,12 +289,29 @@ def repair_text(text: str, evidence: str, language: str, target: float,
         if folder is not None:
             from pathlib import Path
             from .providers import digest
-            directory=Path(folder)/'voice-repair-attempts';directory.mkdir(exist_ok=True)
+            directory=Path(folder)/'voice-repair-attempts'
             identity=dict(version=VOICE_REPAIR_VERSION,text=text,target=target,measured=measured,generation=generation)
             path=directory/(digest(identity)+'.json')
-            temporary=path.with_suffix('.tmp')
-            temporary.write_text(json.dumps({**identity,'budget':budget,'attempts':attempts},ensure_ascii=False,indent=2),'utf-8')
-            temporary.replace(path)
+            temporary=path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
+            try:
+                directory.mkdir(exist_ok=True)
+                temporary.write_text(json.dumps({**identity,'budget':budget,'attempts':attempts},ensure_ascii=False,indent=2),'utf-8')
+                for retry in range(3):
+                    try:
+                        temporary.replace(path)
+                        break
+                    except PermissionError:
+                        if retry == 2:
+                            raise
+                        time.sleep(.05 * (retry + 1))
+            except OSError as error:
+                # Audit is diagnostic; the project checkpoint is authoritative.
+                logging.warning('Could not save voice repair audit %s: %s', path, error)
+            finally:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    logging.warning('Could not remove temporary voice repair audit %s', temporary)
     for attempt in range(max(1, max_attempts)):
         check()
         # Errors belong to this response only. A valid second answer must not

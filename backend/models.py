@@ -1,5 +1,6 @@
+from pathlib import Path
 from typing import Literal
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 
 class Model(BaseModel):
@@ -87,6 +88,15 @@ class Settings(Model):
     part_count: int = Field(default=3, ge=1, le=100)
     export_mode: Literal['single', 'parts'] = 'single'
     export_part_count: int = Field(default=2, ge=2, le=100)
+    export_drive: str = Field(default='', pattern=r'^$|^[A-Za-z]:$')
+    export_directory: str = Field(default='', max_length=1024)
+
+    @field_validator('export_directory')
+    @classmethod
+    def valid_export_directory(cls, value):
+        if value and (not Path(value).is_absolute() or '\x00' in value):
+            raise ValueError('Thư mục xuất phải là đường dẫn tuyệt đối.')
+        return value
     opening_delay: float = Field(default=3, ge=0, le=15)
     part_seconds: float = Field(default=60, ge=10, le=1800)
     split_mode: Literal['exact', 'natural'] = 'natural'
