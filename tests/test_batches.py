@@ -66,6 +66,58 @@ def test_batch_api_creates_snapshots_and_controls_one_item(database):
     assert project['settings']['summary_seconds'] == 60
 
 
+def test_batch_uploaded_reference_is_copied_to_each_project(database):
+    client = TestClient(app)
+    headers = {'X-AIR3view': 'studio'}
+    uploaded = client.post('/api/batches/reference', files={'file': ('sample.wav', b'voice sample', 'audio/wav')}, headers=headers)
+    assert uploaded.status_code == 200
+    token = uploaded.json()['token']
+    config = settings()
+    config['voice_mode'] = 'clone'
+    created = client.post('/api/batches', json={'items': [{'url': URL_A}, {'url': URL_B}],
+                          'settings': config, 'reference_token': token}, headers=headers)
+    assert created.status_code == 200
+    references = []
+    for item in created.json()['items']:
+        project = store.read(item['project_id'])
+        reference = project['settings']['voice_reference']
+        references.append(store.asset(project['id'], reference))
+        assert references[-1].read_bytes() == b'voice sample'
+    assert references[0] != references[1]
+    assert client.post('/api/batches', json={'items': [{'url': URL_A}],
+           'settings': config, 'reference_token': '../sample.wav'}, headers=headers).status_code == 422
+
+
+def test_batch_rejects_missing_or_invalid_reference(database):
+    client = TestClient(app)
+    headers = {'X-AIR3view': 'studio'}
+    assert client.post('/api/batches/reference', files={'file': ('sample.txt', b'voice', 'text/plain')}, headers=headers).status_code == 422
+    config = settings()
+    config['voice_mode'] = 'clone'
+    response = client.post('/api/batches', json={'items': [{'url': URL_A}], 'settings': config}, headers=headers)
+    assert response.status_code == 422
+    assert not store.list_projects()
+
+
+def test_batch_uploaded_reference_overrides_profile_sample(database):
+    source = store.create('Profile', {'kind': 'youtube', 'url': URL_A, 'file': ''})
+    store.asset(source['id'], 'old.wav').write_bytes(b'old voice')
+    source['settings'].update(voice_mode='clone', voice_reference='old.wav',
+                              voice_reference_text='old transcript', voice_reference_hash='old hash')
+    store.save(source)
+    client = TestClient(app)
+    headers = {'X-AIR3view': 'studio'}
+    token = client.post('/api/batches/reference', files={'file': ('new.wav', b'new voice', 'audio/wav')}, headers=headers).json()['token']
+    created = client.post('/api/batches', json={'items': [{'url': URL_B}],
+                          'settings': source['settings'], 'source_project_id': source['id'],
+                          'reference_token': token}, headers=headers)
+    assert created.status_code == 200
+    project = store.read(created.json()['items'][0]['project_id'])
+    assert store.asset(project['id'], project['settings']['voice_reference']).read_bytes() == b'new voice'
+    assert project['settings']['voice_reference_text'] == ''
+    assert project['settings']['voice_reference_hash'] == ''
+
+
 def test_reaction_batch_uses_commentary_configuration_for_each_video(database):
     common = settings()
     common.update(editorial_mode='standard', production_workflow='legacy',

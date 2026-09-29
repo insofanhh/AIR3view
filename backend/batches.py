@@ -18,6 +18,8 @@ from . import store
 from .models import Settings
 
 MAX_ITEMS = 200
+REFERENCE_EXTENSIONS = {'.wav', '.mp3', '.m4a', '.ogg', '.flac'}
+MAX_REFERENCE_BYTES = 50 * 1024**2
 MAX_ACTIVE = 2
 MAX_AUTO_RETRIES = 5
 AUTO_RETRY_DELAY = 3
@@ -154,17 +156,45 @@ def parse_excel(content):
         raise ValueError('Không đọc được sheet đầu tiên của file Excel.') from exc
 
 
-def create(name, items, settings, source_project_id=None):
+def save_reference(filename, content):
+    ext = Path(filename or '').suffix.lower()
+    if ext not in REFERENCE_EXTENSIONS:
+        raise ValueError('Chọn file audio giọng mẫu.')
+    if not content or len(content) > MAX_REFERENCE_BYTES:
+        raise ValueError('Giọng mẫu phải có dữ liệu và tối đa 50 MB.')
+    token = uuid.uuid4().hex
+    folder = store.DATA / '_batch_references'
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / (token + ext)).write_bytes(content)
+    return token + ext
+
+
+def staged_reference(token):
+    if not token or Path(token).name != token or len(Path(token).stem) != 32 or \
+            any(c not in '0123456789abcdef' for c in Path(token).stem) or \
+            Path(token).suffix.lower() not in REFERENCE_EXTENSIONS:
+        raise ValueError('Giọng mẫu của lô không hợp lệ. Hãy tải lại file.')
+    path = store.DATA / '_batch_references' / token
+    if not path.is_file() or not 0 < path.stat().st_size <= MAX_REFERENCE_BYTES:
+        raise ValueError('Giọng mẫu của lô không còn tồn tại. Hãy tải lại file.')
+    return path
+
+
+def create(name, items, settings, source_project_id=None, reference_token=None):
     rows = validate_items(items)
     base = Settings.model_validate(settings).model_dump()
     source = store.read(source_project_id) if source_project_id else None
-    if base['voice_reference'] and not source:
+    if reference_token and base['voice_mode'] != 'clone':
+        raise ValueError('Chỉ dùng giọng mẫu khi đã chọn Theo giọng mẫu.')
+    if base['voice_reference'] and not source and not reference_token:
         raise ValueError('Giọng mẫu cần dự án nguồn để sao chép an toàn.')
-    if source and base['voice_reference'] != source['settings'].get('voice_reference'):
+    if source and base['voice_reference'] != source['settings'].get('voice_reference') and not reference_token:
         raise ValueError('Giọng mẫu không khớp dự án cấu hình đã chọn.')
-    reference = store.asset(source_project_id, base['voice_reference']) if base['voice_reference'] else None
+    reference = staged_reference(reference_token) if reference_token else (store.asset(source_project_id, base['voice_reference']) if base['voice_reference'] else None)
     if reference and not reference.is_file():
         raise ValueError('File giọng mẫu của dự án nguồn không còn tồn tại.')
+    if base['voice_mode'] == 'clone' and not reference:
+        raise ValueError('Chọn file giọng mẫu tham chiếu trước khi tạo lô.')
     # Validate all overrides before creating any project.
     normalized = [effective_settings(base, row['settings']) for row in rows]
     from .story import output_budget
@@ -183,11 +213,14 @@ def create(name, items, settings, source_project_id=None):
                 project = store.create(row['title'] or 'Video YouTube mới',
                                        {'kind': 'youtube', 'url': row['url'], 'file': ''})
                 projects.append(project)
-                if base['voice_reference']:
-                    target = store.asset(project['id'], Path(base['voice_reference']).name)
+                if reference:
+                    target = store.asset(project['id'], reference.name)
                     if reference.resolve() != target.resolve():
                         shutil.copyfile(reference, target)
                     snapshot['voice_reference'] = target.name
+                    if reference_token:
+                        snapshot['voice_reference_text'] = ''
+                        snapshot['voice_reference_hash'] = ''
                 else:
                     snapshot['voice_reference'] = ''
                 project['settings'] = snapshot

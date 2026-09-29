@@ -236,6 +236,7 @@ class BatchInput(Model):
     items: list[BatchItemInput] = Field(min_length=1, max_length=batches.MAX_ITEMS)
     settings: Settings
     source_project_id: str | None = None
+    reference_token: str | None = None
 
 
 class BatchPreviewInput(Model):
@@ -479,6 +480,13 @@ async def import_batch_excel(file: UploadFile = File(...)):
     return await asyncio.to_thread(batches.parse_excel, content)
 
 
+@app.post('/api/batches/reference')
+async def upload_batch_reference(file: UploadFile = File(...)):
+    content = await file.read(batches.MAX_REFERENCE_BYTES + 1)
+    await file.close()
+    return {'token': batches.save_reference(file.filename, content), 'name': Path(file.filename or '').name}
+
+
 @app.get('/api/batches/template')
 def batch_excel_template():
     from io import BytesIO
@@ -505,7 +513,7 @@ def list_batches():
 @app.post('/api/batches')
 def create_batch(body: BatchInput):
     return batches.create(body.name, [item.model_dump() for item in body.items],
-                          body.settings.model_dump(), body.source_project_id)
+                          body.settings.model_dump(), body.source_project_id, body.reference_token)
 
 
 @app.get('/api/batches/{batch_id}')
