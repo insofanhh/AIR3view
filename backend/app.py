@@ -203,6 +203,8 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=['127.0.0.1', 'localhost
 @app.middleware('http')
 async def local_mutations(request: Request, call_next):
     if request.method not in ('GET', 'HEAD', 'OPTIONS'):
+        if updates.INSTALL_GUARD.is_set():
+            return JSONResponse({'detail': 'AIR3view đang cài bản cập nhật; hãy đợi ứng dụng mở lại.'}, status_code=503)
         origin = request.headers.get('origin')
         if request.headers.get('x-air3view') != 'studio' or (origin and urlparse(origin).hostname not in ('127.0.0.1', 'localhost', '::1')):
             return JSONResponse({'detail': 'Yêu cầu phải đến từ AIR3view trên máy này.'}, status_code=403)
@@ -278,6 +280,8 @@ class DeleteProjectInput(Model):
 
 
 def queue_job(pid, kind, options=None):
+    if updates.INSTALL_GUARD.is_set():
+        raise ValueError('AIR3view đang cài bản cập nhật; không nhận tác vụ mới.')
     if kind not in ('prepare', 'transcribe', 'analyze', 'localize', 'language', 'voice', 'captions', 'render', 'preview', 'all', 'export') and not re.fullmatch(r'voice:[a-zA-Z0-9_-]+', kind):
         raise ValueError('Loại tác vụ không hợp lệ.')
     with store.conn() as db:
@@ -325,6 +329,21 @@ def choose_export_directory(body: FolderPickerInput):
 @app.get('/api/update')
 def update_status(refresh: bool = False):
     return updates.check_updates(refresh=refresh)
+
+
+@app.get('/api/update/download')
+def update_download_status():
+    return updates.download_status()
+
+
+@app.post('/api/update/download')
+def update_download():
+    return updates.start_download()
+
+
+@app.post('/api/update/install')
+def update_install():
+    return updates.start_install()
 
 
 @app.get('/api/omnivoice')

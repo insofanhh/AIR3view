@@ -55,6 +55,7 @@ Copy-Item -LiteralPath (Join-Path $root 'frontend\dist') -Destination (Join-Path
 Copy-Item -LiteralPath (Join-Path $root 'run.py') -Destination $stage
 Set-Content -LiteralPath (Join-Path $stage 'APP_VERSION') -Value $Version -Encoding ascii
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'launcher.py') -Destination $stage
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'update-helper.ps1') -Destination $stage
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'THIRD_PARTY.md') -Destination $stage
 
 function Find-Executable([string]$name, [string]$packageName) {

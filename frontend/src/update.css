@@ -4,5 +4,9 @@
 .update-banner span{font-size:10px;color:#b5c7ab}
 .update-banner>a{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;border:1px solid #8db578;border-radius:6px;padding:8px 10px;color:#e3ffd5;text-decoration:none;font-size:10px}
 .update-banner>a:hover{background:#3a5137}
+.update-banner .update-action{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;border:1px solid #8db578;border-radius:6px;padding:8px 10px;color:#e3ffd5;background:transparent;font-size:10px;cursor:pointer}
+.update-banner .update-action:hover:not(:disabled){background:#3a5137}
+.update-banner .update-action:disabled{opacity:.65;cursor:wait}
+.update-banner .update-error{color:#ffb6aa}
 .update-banner .icon-button{flex:none}
 @media(max-width:790px){.update-banner{padding:10px 15px;gap:8px;flex-wrap:wrap}.update-banner>div{flex-basis:100%}}

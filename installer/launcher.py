@@ -23,6 +23,7 @@ def runtime_environment(root: Path, source: dict[str, str] | None = None) -> dic
         env.setdefault('CODEX_PATH', str(tools / 'codex.exe'))
     env['PATH'] = str(tools) + os.pathsep + env.get('PATH', '')
     env['PYTHONUTF8'] = '1'
+    env['AIR3VIEW_LAUNCHER'] = '1'
     return env
 
 
@@ -122,6 +123,16 @@ def main() -> None:
         icon = pystray.Icon('AIR3view', tray_image(), 'AIR3view',
                             pystray.Menu(pystray.MenuItem('Mở AIR3view', open_app, default=True),
                                          pystray.MenuItem('Thoát', quit_app)))
+        def watch_update():
+            from backend.updates import INSTALL_REQUESTED
+            while worker.is_alive() and not server.should_exit:
+                if INSTALL_REQUESTED.wait(timeout=.25):
+                    # Let the POST response reach the browser before closing.
+                    time.sleep(.6)
+                    server.should_exit = True
+                    icon.stop()
+                    return
+        threading.Thread(target=watch_update, name='air3view-update-watcher', daemon=True).start()
         try:
             icon.run()
         finally:

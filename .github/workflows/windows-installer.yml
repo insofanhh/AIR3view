@@ -33,6 +33,13 @@ jobs:
       - name: Test launcher
         shell: pwsh
         run: python -m pytest -q tests/test_installer_launcher.py
+      - name: Validate updater helper
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path installer/update-helper.ps1).Path, [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { throw ($errors | ForEach-Object Message) }
       - name: Build and smoke-test installer
         shell: pwsh
         env:

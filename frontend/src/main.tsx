@@ -18,7 +18,8 @@ type Project = { batch_id?:string; export_folder?:string; shared_voice?:{audio:s
 type Timeline = { source_mutes?:{start:number;end:number}[]; original_audio?:{start:number;end:number}[]; narration_mix?:{ai_ratio:number;original_ratio:number}; retention?:{requested_ratio:number;actual_ratio:number;available_seconds:number;shortfall_seconds:number}; planned?:boolean; clips:any[]; voices:any[]; cues:Cue[]; parts:any[]; duration:number; warnings:string[] };
 type Job = { id:string; kind:string; state:string; progress:number; message:string; error:string };
 type KeyResult = { provider:'openai'|'gemini'; configured:boolean; storage:'local_encrypted'; source?:'local_encrypted'|'environment'|'none' };
-type UpdateStatus = { available:boolean; status:'ok'|'unavailable'; current_version:string; latest_version:string|null; release_url:string|null };
+type UpdateStatus = { available:boolean; status:'ok'|'unavailable'; current_version:string; latest_version:string|null; release_url:string|null; install_supported:boolean; installer_size:number|null };
+type UpdateDownload = {phase:'idle'|'downloading'|'ready'|'installing'|'error';version:string;downloaded:number;total:number;error:string};
 const emptyTimeline:Timeline = {clips:[],voices:[],cues:[],parts:[],duration:0,warnings:[]};
 const media = (p:Project,file:string) => `/media/${p.id}/${file.split('/').map(encodeURIComponent).join('/')}`;
 const clock = (n:number) => `${Math.floor((n||0)/60).toString().padStart(2,'0')}:${Math.floor((n||0)%60).toString().padStart(2,'0')}`;
@@ -40,6 +41,7 @@ function App(){
   const [exportStorage,setExportStorage]=useState<{default:string}>({default:''});
   const [health,setHealth]=useState<any>({}),[omni,setOmni]=useState<boolean|null>(null),[tab,setTab]=useState('source'),[panel,setPanel]=useState('output');
   const [updateInfo,setUpdateInfo]=useState<UpdateStatus|null>(null),[checkingUpdate,setCheckingUpdate]=useState(false),[dismissedUpdate,setDismissedUpdate]=useState(()=>{try{return localStorage.getItem('air3view-dismissed-update')||'';}catch{return '';}});
+  const [updateDownload,setUpdateDownload]=useState<UpdateDownload|null>(null);
   const [importOpen,setImportOpen]=useState(false),[exportOpen,setExportOpen]=useState(false),[url,setUrl]=useState(''),[uploading,setUploading]=useState(false),[uploadPercent,setUploadPercent]=useState(0);
   const [error,setError]=useState(''),[notice,setNotice]=useState(''),[dirty,setDirty]=useState(false),[saving,setSaving]=useState(false),[switching,setSwitching]=useState(false),[assetUploading,setAssetUploading]=useState(false),[keySaving,setKeySaving]=useState(false),[time,setTime]=useState(0),[playing,setPlaying]=useState(false),[playbackReady,setPlaybackReady]=useState(false),[apiKey,setApiKey]=useState('');
   const [geminiKeyVersion,setGeminiKeyVersion]=useState(0),[checkingGemini,setCheckingGemini]=useState(false),[hiddenJobError,setHiddenJobError]=useState('');
@@ -76,11 +78,14 @@ function App(){
       const result=await api<UpdateStatus>('/update'+(manual?'?refresh=true':''));
       setUpdateInfo(result);
       if(manual&&result.available)setDismissedUpdate('');
-      if(manual)setNotice(result.status==='unavailable'?'Không thể kiểm tra cập nhật. Hãy thử lại khi có Internet.':result.available?`Có AIR3view ${result.latest_version}. Mở trang tải ở thông báo phía trên.`:'Bạn đang dùng phiên bản mới nhất.');
+      if(manual)setNotice(result.status==='unavailable'?'Không thể kiểm tra cập nhật. Hãy thử lại khi có Internet.':result.available?`Có AIR3view ${result.latest_version}. Xem lựa chọn cập nhật phía trên.`:'Bạn đang dùng phiên bản mới nhất.');
     }catch{if(manual)setNotice('Không thể kiểm tra cập nhật. Hãy thử lại khi có Internet.');}
     finally{if(manual)setCheckingUpdate(false);}
   }
   useEffect(()=>{void checkUpdate();const id=setInterval(()=>{void checkUpdate();},6*60*60*1000);return()=>clearInterval(id);},[]);
+  useEffect(()=>{if(!updateInfo?.available||!updateInfo.install_supported)return;const poll=()=>api<UpdateDownload>('/update/download').then(setUpdateDownload).catch(()=>{});void poll();const id=setInterval(poll,1000);return()=>clearInterval(id);},[updateInfo?.available,updateInfo?.install_supported]);
+  async function downloadUpdate(){try{setError('');setUpdateDownload(await api<UpdateDownload>('/update/download',{method:'POST'}));}catch(e){notify(e);}}
+  async function installUpdate(){try{setError('');await flushPendingEdits();setUpdateDownload(await api<UpdateDownload>('/update/install',{method:'POST'}));setNotice('AIR3view sẽ đóng, cài đặt bản mới rồi tự mở lại.');}catch(e){notify(e);}}
   async function flushPendingEdits(){
     const projectId=current.current?.id;
     while(projectId&&current.current?.id===projectId&&editVersion.current!==savedVersion.current)await persist();
@@ -241,7 +246,7 @@ function App(){
     </aside>
     <main className="main">
       <header className="topbar"><div className="breadcrumbs"><span>Workspace</span><ChevronRight size={14}/><strong>{batchOpen?'Sản xuất hàng loạt':p?'Trình biên tập':'Dự án của bạn'}</strong></div><div className="top-actions"><span className={'connection '+(omni?'online':'')}><i/>{ttsProvider==='vieneu'?(omni?'VieNeu SDK đã cài':'Kiểm tra VieNeu SDK'):(omni?'OmniVoice đã kết nối':'OmniVoice chưa kết nối')}</span><div className="avatar">A</div></div></header>
-      {updateInfo?.available&&updateInfo.latest_version!==dismissedUpdate&&updateInfo.release_url&&<div className="update-banner" role="status"><div><strong>Đã có AIR3view v{updateInfo.latest_version}</strong><span>Bạn đang dùng v{updateInfo.current_version}. Tải bộ cài mới để cập nhật; dự án đã lưu được giữ nguyên.</span></div><a href={updateInfo.release_url} target="_blank" rel="noopener noreferrer">Xem bản cập nhật <ArrowRight size={14}/></a><IconButton label="Ẩn thông báo cập nhật" onClick={()=>{const version=updateInfo.latest_version||'';setDismissedUpdate(version);try{localStorage.setItem('air3view-dismissed-update',version);}catch{}}}><X size={16}/></IconButton></div>}
+      {updateInfo?.available&&updateInfo.latest_version!==dismissedUpdate&&updateInfo.release_url&&<div className="update-banner" role="status"><div><strong>Đã có AIR3view v{updateInfo.latest_version}</strong><span>Bạn đang dùng v{updateInfo.current_version}. Dự án đã lưu được giữ nguyên khi cập nhật.</span>{updateDownload?.phase==='downloading'&&<span>Đang tải bộ cài: {Math.round(100*updateDownload.downloaded/Math.max(1,updateDownload.total))}% · {(updateDownload.downloaded/1048576).toFixed(0)}/{(updateDownload.total/1048576).toFixed(0)} MB</span>}{updateDownload?.phase==='error'&&<span className="update-error">{updateDownload.error}</span>}</div>{updateInfo.install_supported?<>{updateDownload?.phase==='downloading'||updateDownload?.phase==='installing'?<button className="update-action" disabled><LoaderCircle size={14} className="spin"/>{updateDownload.phase==='installing'?'Đang cài đặt…':'Đang tải…'}</button>:updateDownload?.phase==='ready'&&updateDownload.version===updateInfo.latest_version?<button className="update-action" disabled={busy||saving} onClick={()=>void installUpdate()}>Cài đặt & khởi động lại <ArrowRight size={14}/></button>:<button className="update-action" onClick={()=>void downloadUpdate()}>{updateDownload?.phase==='error'?'Thử tải lại':'Tải & cập nhật'} <ArrowRight size={14}/></button>}</>:<a href={updateInfo.release_url} target="_blank" rel="noopener noreferrer">Tải bản nâng cấp một lần <ArrowRight size={14}/></a>}<IconButton label="Ẩn thông báo cập nhật" onClick={()=>{const version=updateInfo.latest_version||'';setDismissedUpdate(version);try{localStorage.setItem('air3view-dismissed-update',version);}catch{}}}><X size={16}/></IconButton></div>}
       {error&&<div className="error-banner" role="alert"><span>{error}</span><IconButton label="Đóng thông báo" onClick={()=>setError('')}><X size={16}/></IconButton></div>}
       {notice&&<div className="toast" role="status"><Check size={16}/>{notice}</div>}
       {batchOpen?<BatchWorkspace projects={projects} onBack={()=>{setBatchOpen(false);void refreshList();}} onOpen={id=>{setBatchOpen(false);api<Project>('/projects/'+id).then(project=>{void refreshList();void choose(project,{applyPreferences:false});}).catch(notify);}}/>:!p?<section className="library">

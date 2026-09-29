@@ -13,6 +13,7 @@ def test_installed_runtime_uses_private_data_and_bundled_tools(tmp_path):
     assert env['CODEX_PATH'] == str(root / 'tools' / 'codex.exe')
     assert env['PATH'].split(';')[0] == str(root / 'tools')
     assert env['PYTHONUTF8'] == '1'
+    assert env['AIR3VIEW_LAUNCHER'] == '1'
 
 
 def test_installed_runtime_respects_existing_data_folder(tmp_path):

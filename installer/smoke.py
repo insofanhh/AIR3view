@@ -18,6 +18,7 @@ def main():
     assert (root / 'tools' / 'deno.exe').is_file()
     assert (root / 'tools' / 'codex.exe').is_file()
     assert (root / 'APP_VERSION').is_file()
+    assert (root / 'update-helper.ps1').is_file()
     from backend import vieneu
     import openpyxl
     from backend.media import filter_complex_file_option
