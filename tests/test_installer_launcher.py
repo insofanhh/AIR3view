@@ -1,4 +1,8 @@
 from pathlib import Path
+import os
+import subprocess
+
+import pytest
 
 from installer.launcher import runtime_environment
 
@@ -23,3 +27,13 @@ def test_installed_runtime_respects_existing_data_folder(tmp_path):
     assert env['AIR3VIEW_DATA'] == str(existing)
     assert env['FFMPEG_PATH'] == 'custom-ffmpeg'
     assert 'CODEX_PATH' not in env
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='Windows PowerShell compatibility')
+def test_updater_script_runs_with_windows_powershell():
+    helper = Path(__file__).resolve().parents[1] / 'installer' / 'update-helper.ps1'
+    assert helper.read_bytes().startswith(b'\xef\xbb\xbf')
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive',
+                             '-ExecutionPolicy', 'Bypass', '-File', str(helper), '-ValidateOnly'],
+                            capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stderr

@@ -42,6 +42,8 @@ function App(){
   const [health,setHealth]=useState<any>({}),[omni,setOmni]=useState<boolean|null>(null),[tab,setTab]=useState('source'),[panel,setPanel]=useState('output');
   const [updateInfo,setUpdateInfo]=useState<UpdateStatus|null>(null),[checkingUpdate,setCheckingUpdate]=useState(false),[dismissedUpdate,setDismissedUpdate]=useState(()=>{try{return localStorage.getItem('air3view-dismissed-update')||'';}catch{return '';}});
   const [updateDownload,setUpdateDownload]=useState<UpdateDownload|null>(null);
+  const [installTransition,setInstallTransition]=useState(false),installingRef=useRef(false);
+  const [installDelay,setInstallDelay]=useState(false);
   const [importOpen,setImportOpen]=useState(false),[exportOpen,setExportOpen]=useState(false),[url,setUrl]=useState(''),[uploading,setUploading]=useState(false),[uploadPercent,setUploadPercent]=useState(0);
   const [error,setError]=useState(''),[notice,setNotice]=useState(''),[dirty,setDirty]=useState(false),[saving,setSaving]=useState(false),[switching,setSwitching]=useState(false),[assetUploading,setAssetUploading]=useState(false),[keySaving,setKeySaving]=useState(false),[time,setTime]=useState(0),[playing,setPlaying]=useState(false),[playbackReady,setPlaybackReady]=useState(false),[apiKey,setApiKey]=useState('');
   const [geminiKeyVersion,setGeminiKeyVersion]=useState(0),[checkingGemini,setCheckingGemini]=useState(false),[hiddenJobError,setHiddenJobError]=useState('');
@@ -61,7 +63,7 @@ function App(){
   const keyConfigured=s.provider==='gemini'?health.gemini_api_key:health.api_key;
   const keySource=s.provider==='gemini'?health.gemini_key_source:health.openai_key_source;
   useEffect(()=>setApiKey(''),[p?.id,s.provider]);
-  const notify=(e:unknown)=>setError(e instanceof Error?e.message:String(e));
+  const notify=(e:unknown)=>{if(!installingRef.current)setError(e instanceof Error?e.message:String(e));};
   useEffect(()=>{let alive=true;setOmni(null);setTtsInfo({});const check=()=>api('/tts?provider='+ttsProvider+(ttsProvider==='omnivoice'?'&url='+encodeURIComponent(ttsUrl):'')).then(x=>{if(alive){setOmni(x.ok);setTtsInfo(x);}}).catch(()=>{if(alive){setOmni(false);setTtsInfo({message:'Không kiểm tra được trạng thái giọng đọc.'});}});check();const id=setInterval(check,30000);return()=>{alive=false;clearInterval(id);};},[ttsProvider,ttsUrl]);
   async function checkGemini(){
     if(!s.model?.trim()){setError('Chọn model Gemini trước khi kiểm tra.');return;}
@@ -85,7 +87,31 @@ function App(){
   useEffect(()=>{void checkUpdate();const id=setInterval(()=>{void checkUpdate();},6*60*60*1000);return()=>clearInterval(id);},[]);
   useEffect(()=>{if(!updateInfo?.available||!updateInfo.install_supported)return;const poll=()=>api<UpdateDownload>('/update/download').then(setUpdateDownload).catch(()=>{});void poll();const id=setInterval(poll,1000);return()=>clearInterval(id);},[updateInfo?.available,updateInfo?.install_supported]);
   async function downloadUpdate(){try{setError('');setUpdateDownload(await api<UpdateDownload>('/update/download',{method:'POST'}));}catch(e){notify(e);}}
-  async function installUpdate(){try{setError('');await flushPendingEdits();setUpdateDownload(await api<UpdateDownload>('/update/install',{method:'POST'}));setNotice('AIR3view sẽ đóng, cài đặt bản mới rồi tự mở lại.');}catch(e){notify(e);}}
+  async function installUpdate(){
+    try{
+      setError('');await flushPendingEdits();
+      installingRef.current=true;setInstallDelay(false);setInstallTransition(true);
+      setUpdateDownload(previous=>({phase:'installing',version:updateInfo?.latest_version||'',downloaded:previous?.downloaded||0,total:previous?.total||0,error:''}));
+      await api<UpdateDownload>('/update/install',{method:'POST'});
+    }catch(e){
+      // The server can close before the POST response reaches the browser.
+      try{await api('/health');installingRef.current=false;setInstallTransition(false);notify(e);}
+      catch{/* The installer handoff is underway; wait for the new server. */}
+    }
+  }
+  useEffect(()=>{if(!installTransition)return;let active=true;
+    const poll=async()=>{try{
+      const status=await api<{version:string}>('/health');if(!active)return;
+      if(status.version===updateInfo?.latest_version){window.location.reload();return;}
+      const state=await api<UpdateDownload>('/update/download');if(!active)return;
+      if(state.phase==='error'){
+        installingRef.current=false;setInstallTransition(false);setUpdateDownload(state);
+        setError(state.error||'Cập nhật thất bại. Hãy kiểm tra nhật ký cập nhật.');
+      }
+    }catch{/* Temporary connection loss is expected while the installer runs. */}};
+    const id=window.setInterval(()=>void poll(),1500);return()=>{active=false;window.clearInterval(id);};
+  },[installTransition,updateInfo?.latest_version]);
+  useEffect(()=>{if(!installTransition)return;const id=window.setTimeout(()=>setInstallDelay(true),4*60*1000);return()=>window.clearTimeout(id);},[installTransition]);
   async function flushPendingEdits(){
     const projectId=current.current?.id;
     while(projectId&&current.current?.id===projectId&&editVersion.current!==savedVersion.current)await persist();
@@ -246,10 +272,10 @@ function App(){
     </aside>
     <main className="main">
       <header className="topbar"><div className="breadcrumbs"><span>Workspace</span><ChevronRight size={14}/><strong>{batchOpen?'Sản xuất hàng loạt':p?'Trình biên tập':'Dự án của bạn'}</strong></div><div className="top-actions"><span className={'connection '+(omni?'online':'')}><i/>{ttsProvider==='vieneu'?(omni?'VieNeu SDK đã cài':'Kiểm tra VieNeu SDK'):(omni?'OmniVoice đã kết nối':'OmniVoice chưa kết nối')}</span><div className="avatar">A</div></div></header>
-      {updateInfo?.available&&updateInfo.latest_version!==dismissedUpdate&&updateInfo.release_url&&<div className="update-banner" role="status"><div><strong>Đã có AIR3view v{updateInfo.latest_version}</strong><span>Bạn đang dùng v{updateInfo.current_version}. Dự án đã lưu được giữ nguyên khi cập nhật.</span>{updateDownload?.phase==='downloading'&&<span>Đang tải bộ cài: {Math.round(100*updateDownload.downloaded/Math.max(1,updateDownload.total))}% · {(updateDownload.downloaded/1048576).toFixed(0)}/{(updateDownload.total/1048576).toFixed(0)} MB</span>}{updateDownload?.phase==='error'&&<span className="update-error">{updateDownload.error}</span>}</div>{updateInfo.install_supported?<>{updateDownload?.phase==='downloading'||updateDownload?.phase==='installing'?<button className="update-action" disabled><LoaderCircle size={14} className="spin"/>{updateDownload.phase==='installing'?'Đang cài đặt…':'Đang tải…'}</button>:updateDownload?.phase==='ready'&&updateDownload.version===updateInfo.latest_version?<button className="update-action" disabled={busy||saving} onClick={()=>void installUpdate()}>Cài đặt & khởi động lại <ArrowRight size={14}/></button>:<button className="update-action" onClick={()=>void downloadUpdate()}>{updateDownload?.phase==='error'?'Thử tải lại':'Tải & cập nhật'} <ArrowRight size={14}/></button>}</>:<a href={updateInfo.release_url} target="_blank" rel="noopener noreferrer">Tải bản nâng cấp một lần <ArrowRight size={14}/></a>}<IconButton label="Ẩn thông báo cập nhật" onClick={()=>{const version=updateInfo.latest_version||'';setDismissedUpdate(version);try{localStorage.setItem('air3view-dismissed-update',version);}catch{}}}><X size={16}/></IconButton></div>}
+      {updateInfo?.available&&updateInfo.latest_version!==dismissedUpdate&&updateInfo.release_url&&<div className="update-banner" role="status"><div><strong>Đã có AIR3view v{updateInfo.latest_version}</strong><span>{installTransition?'AIR3view đang cài đặt và sẽ tự tải lại khi sẵn sàng.':`Bạn đang dùng v${updateInfo.current_version}. Dự án đã lưu được giữ nguyên khi cập nhật.`}</span>{installTransition&&installDelay&&<span className="update-error">Cập nhật lâu hơn dự kiến. Nếu ứng dụng chưa tự mở lại, hãy cài thủ công từ trang Release.</span>}{updateDownload?.phase==='downloading'&&<span>Đang tải bộ cài: {Math.round(100*updateDownload.downloaded/Math.max(1,updateDownload.total))}% · {(updateDownload.downloaded/1048576).toFixed(0)}/{(updateDownload.total/1048576).toFixed(0)} MB</span>}{updateDownload?.phase==='error'&&<span className="update-error">{updateDownload.error}</span>}</div>{installTransition&&installDelay?<a href={updateInfo.release_url} target="_blank" rel="noopener noreferrer">Mở trang Release <ArrowRight size={14}/></a>:updateInfo.install_supported?<>{updateDownload?.phase==='downloading'||updateDownload?.phase==='installing'?<button className="update-action" disabled><LoaderCircle size={14} className="spin"/>{updateDownload.phase==='installing'?'Đang cài đặt…':'Đang tải…'}</button>:updateDownload?.phase==='ready'&&updateDownload.version===updateInfo.latest_version?<button className="update-action" disabled={busy||saving} onClick={()=>void installUpdate()}>Cài đặt & khởi động lại <ArrowRight size={14}/></button>:<button className="update-action" onClick={()=>void downloadUpdate()}>{updateDownload?.phase==='error'?'Thử tải lại':'Tải & cập nhật'} <ArrowRight size={14}/></button>}</>:<a href={updateInfo.release_url} target="_blank" rel="noopener noreferrer">Tải bản nâng cấp một lần <ArrowRight size={14}/></a>}<IconButton label="Ẩn thông báo cập nhật" onClick={()=>{const version=updateInfo.latest_version||'';setDismissedUpdate(version);try{localStorage.setItem('air3view-dismissed-update',version);}catch{}}}><X size={16}/></IconButton></div>}
       {error&&<div className="error-banner" role="alert"><span>{error}</span><IconButton label="Đóng thông báo" onClick={()=>setError('')}><X size={16}/></IconButton></div>}
       {notice&&<div className="toast" role="status"><Check size={16}/>{notice}</div>}
-      {batchOpen?<BatchWorkspace projects={projects} onBack={()=>{setBatchOpen(false);void refreshList();}} onOpen={id=>{setBatchOpen(false);api<Project>('/projects/'+id).then(project=>{void refreshList();void choose(project,{applyPreferences:false});}).catch(notify);}}/>:!p?<section className="library">
+      {batchOpen?<BatchWorkspace projects={projects} updating={installTransition} onBack={()=>{setBatchOpen(false);void refreshList();}} onOpen={id=>{setBatchOpen(false);api<Project>('/projects/'+id).then(project=>{void refreshList();void choose(project,{applyPreferences:false});}).catch(notify);}}/>:!p?<section className="library">
         <div className="library-header"><div className="eyebrow"><span/> TỪ CÂU CHUYỆN ĐẾN VIDEO</div><h1>Mỗi video, một câu chuyện mới.</h1><p>Biến video dài thành những phần review cuốn hút.<br/>AI hỗ trợ kể chuyện. Bạn quyết định bản dựng cuối cùng.</p><button className="primary large" onClick={()=>setImportOpen(true)}><Plus size={18}/> Tạo dự án mới</button><button className="secondary" onClick={()=>setBatchOpen(true)}><Layers size={16}/> Sản xuất hàng loạt</button></div>
         <div className="hero-art" aria-hidden="true"><div className="orbit one"/><div className="orbit two"/><div className="mini-preview"><span className="art-title">A NEW<br/><b>PERSPECTIVE.</b></span><div className="art-landscape"><div/><Play size={26} fill="white"/></div><span className="art-sub">Your story. Reimagined.</span><span className="art-part">PART 01</span></div><div className="float-card"><Sparkles size={18}/><div>AI storytelling<small>Hình ảnh · Giọng đọc · Phụ đề</small></div></div><div className="wave-card">{Array.from({length:23},(_,i)=><i key={i} style={{height:8+Math.abs(Math.sin(i*1.3))*26}}/>)}</div></div>
         <div className="pipeline-strip"><span><Link2/> Nhập nguồn</span><ArrowRight/><span><Sparkles/> AI biên kịch</span><ArrowRight/><span><Mic/> Giọng đọc</span><ArrowRight/><span><Clapperboard/> Dựng & xuất</span></div>

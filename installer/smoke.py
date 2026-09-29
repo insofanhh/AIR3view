@@ -19,6 +19,7 @@ def main():
     assert (root / 'tools' / 'codex.exe').is_file()
     assert (root / 'APP_VERSION').is_file()
     assert (root / 'update-helper.ps1').is_file()
+    assert (root / 'update-helper.ps1').read_bytes().startswith(b'\xef\xbb\xbf'), 'Windows PowerShell 5.1 requires UTF-8 BOM'
     from backend import vieneu
     import openpyxl
     from backend.media import filter_complex_file_option

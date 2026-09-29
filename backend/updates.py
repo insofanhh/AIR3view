@@ -234,10 +234,14 @@ def start_install() -> dict:
                                AIR3VIEW_UPDATE_VERSION=version,
                                AIR3VIEW_UPDATE_PID=str(os.getpid()),
                                AIR3VIEW_UPDATE_PORT=environment.get('AIR3VIEW_PORT', '8765'))
-            subprocess.Popen(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-                              '-WindowStyle', 'Hidden', '-File', str(helper)],
-                             env=environment, cwd=str(_update_dir()), close_fds=True,
-                             creationflags=subprocess.CREATE_NO_WINDOW)
+            # Capture PowerShell startup and parse errors, which happen before
+            # the helper can write result.json or the installer log.
+            with (_update_dir() / 'helper-launch.log').open('ab') as helper_log:
+                subprocess.Popen(['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+                                  '-WindowStyle', 'Hidden', '-File', str(helper)],
+                                 env=environment, cwd=str(_update_dir()), close_fds=True,
+                                 stdout=helper_log, stderr=subprocess.STDOUT,
+                                 creationflags=subprocess.CREATE_NO_WINDOW)
         except OSError as error:
             INSTALL_GUARD.clear()
             raise ValueError('Không chuẩn bị hoặc khởi chạy được trình cập nhật Windows.') from error

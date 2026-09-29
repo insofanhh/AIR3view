@@ -1,3 +1,7 @@
+﻿param([switch]$ValidateOnly)
+
+if ($ValidateOnly) { exit 0 }
+
 $ErrorActionPreference = 'Stop'
 $installer = $env:AIR3VIEW_UPDATE_INSTALLER
 $root = $env:AIR3VIEW_UPDATE_ROOT
@@ -24,6 +28,7 @@ function Start-Air3view {
 }
 
 try {
+    Write-Output "AIR3view update helper started for v$version"
     if (-not (Test-Path -LiteralPath $installer)) { throw 'Không tìm thấy bộ cài đã tải.' }
     if (Get-Process -Id $previousPid -ErrorAction SilentlyContinue) {
         Wait-Process -Id $previousPid -Timeout 90 -ErrorAction Stop

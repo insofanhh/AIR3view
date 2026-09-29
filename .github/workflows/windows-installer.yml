@@ -36,10 +36,8 @@ jobs:
       - name: Validate updater helper
         shell: pwsh
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path installer/update-helper.ps1).Path, [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count) { throw ($errors | ForEach-Object Message) }
+          & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File installer/update-helper.ps1 -ValidateOnly
+          if ($LASTEXITCODE -ne 0) { throw 'Windows PowerShell 5.1 cannot run update-helper.ps1' }
       - name: Build and smoke-test installer
         shell: pwsh
         env:

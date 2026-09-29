@@ -23,7 +23,7 @@ async function request<T>(path:string, options:RequestInit={}):Promise<T>{
 const stateName:Record<string,string>={pending:'Chờ',queued:'Trong hàng đợi',running:'Đang chạy',completed:'Hoàn tất',failed:'Lỗi',cancelled:'Đã hủy',deleted:'Dự án đã xóa'};
 const rowFrom=(value:{url:string;title?:string;settings?:Record<string,any>;row?:number}):Row=>({url:value.url,title:value.title||'',settings:value.settings||{},settingsText:JSON.stringify(value.settings||{},null,2),row:value.row});
 
-export function BatchWorkspace({projects,onBack,onOpen}:{projects:Project[];onBack:()=>void;onOpen:(id:string)=>void}){
+export function BatchWorkspace({projects,onBack,onOpen,updating=false}:{projects:Project[];onBack:()=>void;onOpen:(id:string)=>void;updating?:boolean}){
   const [batches,setBatches]=useState<Batch[]>([]),[selected,setSelected]=useState('');
   const [name,setName]=useState('Lô video YouTube'),[raw,setRaw]=useState(''),[rows,setRows]=useState<Row[]>([]),[preview,setPreview]=useState<Preview[]>([]);
   const [settings,setSettings]=useState<Record<string,any>>({}),[profile,setProfile]=useState(''),[advanced,setAdvanced]=useState('');
@@ -34,13 +34,13 @@ export function BatchWorkspace({projects,onBack,onOpen}:{projects:Project[];onBa
   const current=batches.find(x=>x.id===selected);
   const set=(key:string,value:any)=>setSettings(s=>({...s,[key]:value}));
   const refresh=async()=>{const list=await request<Batch[]>('/batches');setBatches(list);setSelected(id=>id||list[0]?.id||'');};
-  useEffect(()=>{let active=true,initialized=false,loading=false;
+  useEffect(()=>{if(updating){setError('');return;}let active=true,initialized=false,loading=false;
     const load=async()=>{if(loading)return;loading=true;try{
       const [defaults,list]=await Promise.all([request<{settings:Record<string,any>;source_project_id:string|null}>('/batches/defaults'),request<Batch[]>('/batches')]);
       if(!active)return;setSettings(defaults.settings);setProfile(defaults.source_project_id||'');setBatches(list);setSelected(list[0]?.id||'');setError('');initialized=true;
     }catch(e){if(active)setError(String(e));}finally{loading=false;}};
     void load();const id=window.setInterval(()=>{if(!initialized){void load();return;}request<Batch[]>('/batches').then(list=>{if(active)setBatches(list);}).catch(e=>{if(active){initialized=false;setError(String(e));}});},2000);
-    return()=>{active=false;clearInterval(id);};},[]);
+    return()=>{active=false;clearInterval(id);};},[updating]);
   useEffect(()=>setAdvanced(JSON.stringify(settings,null,2)),[settings]);
   useEffect(()=>{request<{default:string}>('/export/storage').then(setStorage).catch(e=>setError(String(e)));},[]);
   const openExport=(item?:Item)=>{const source=projects.find(p=>p.id===item?.project_id)?.settings||settings;setExportMode(source.export_mode==='parts'?'parts':'single');setExportCount(source.export_part_count||2);setExportDirectory(source.export_directory||(source.export_drive?`${source.export_drive}\\AIR3view Exports`:''));setExportTarget(item?.id||null);};
