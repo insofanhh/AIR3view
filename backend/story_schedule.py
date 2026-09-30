@@ -237,11 +237,12 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
     bridge_mode=bridge_active(project)
     reaction = project['settings'].get('editorial_mode') == 'reaction_cops'
     if reaction:
-        from .reaction_cops import commentary_quality_issue, commentary_source_text
+        from .reaction_cops import (commentary_quality_issue, commentary_source_text,
+                                    commentary_word_limit)
     def reaction_issue(text, entry):
         if not reaction:
             return None
-        seconds = entry['end'] - entry['start']
+        seconds = max(0, entry['end'] - entry['start'] - .04)
         issue = commentary_quality_issue(text, commentary_source_text(project, entry['evidence']),
                                            seconds, project['settings']['language'])
         return issue
@@ -336,9 +337,14 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
         entries = []
         for index, item in group:
             seconds = item['end'] - item['start']
+            spoken_seconds = max(0, seconds - .04)
+            maximum = math.floor(spoken_seconds * rate * 1.2)
+            if reaction and project['settings']['language'] == 'English':
+                maximum = min(maximum, commentary_word_limit(spoken_seconds, 'English'))
             entries.append({'id': str(index), 'section': item['section'], 'start': item['start'], 'end': item['end'],
-                            'min_words': math.ceil(seconds * rate * .8), 'max_words': math.floor(seconds * rate * 1.2),
-                            'target_words': round(seconds * rate), 'evidence': item['evidence'],
+                            'min_words': min(maximum, math.ceil(spoken_seconds * rate * .8)),
+                            'max_words': maximum,
+                            'target_words': min(maximum, round(spoken_seconds * rate)), 'evidence': item['evidence'],
                             'required_content':item['evidence'] if reaction else result['outcome'] if item['section']=='ending' else
                                result['synopsis'] if item['section'] in ('opening','hook') else item['evidence']})
         accepted = {}

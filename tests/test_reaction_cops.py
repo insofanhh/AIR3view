@@ -6,7 +6,8 @@ import pytest
 from backend.models import Settings
 from backend.reaction_cops import (_planner_catalog, _clean_footage, _effective_duration,
                                    _fill_from_full_source, optimize_cues, validate_plan,
-                                   validated_output_title, commentary_quality_issue)
+                                   validated_output_title, commentary_quality_issue,
+                                   commentary_word_limit, repair_commentary_for_voice)
 from backend.timeline import build_story
 from backend.voice_repair import source_evidence
 
@@ -501,6 +502,71 @@ def test_commentary_audit_rejects_character_voice_and_repeated_prose():
     valid = ('The account now shifts from the items to the reported physical confrontation. '
              'Officers still need to connect that claim with the other accounts before deciding what happened.')
     assert commentary_quality_issue(valid, source, 14, 'English') is None
+
+
+def test_commentary_preflight_repairs_only_rejected_point_and_syncs_plans(monkeypatch, tmp_path):
+    from backend import store
+    project, plan = fixture()
+    project['settings']['language'] = 'English'
+    project.update(id='a' * 32, story_plan=copy.deepcopy(plan),
+                   duration_plan={'schedule': copy.deepcopy(plan)},
+                   voice_repair_state={}, exports=['old'], preview_exports=['old'])
+    selection = project['story_plan']['selections'][2]
+    selection['id'] = 'sel22'
+    project['duration_plan']['schedule']['selections'][2]['id'] = 'sel22'
+    long_text = ('The officers continue asking about what happened at the entrance while '
+                 'the witness gives a longer account and everyone remains nearby as they '
+                 'try to work out exactly which parts of the claim can be confirmed.')
+    narration = dict(id='story-sel22', segment_id='sel22', start=20.0, evidence=selection['evidence'],
+                     target_duration=4.96, text=long_text, audio='', audio_hash='', duration=0,
+                     cues=[], caption_version=0)
+    untouched = dict(id='story-sel0', text='An earlier confirmed turn.', audio='voices/ok.wav')
+    project['narrations'] = [untouched, narration]
+    saved = []
+    monkeypatch.setattr(store, 'save', lambda value: saved.append(copy.deepcopy(value)) or value)
+    prompts = []
+    def answer(prompt, _frames, _settings, _folder, _check, schema):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return {'text': long_text}
+        return {'text': 'The witness gives an account. Officers still need to check it.'}
+    assert repair_commentary_for_voice(project, narration, answer, tmp_path,
+                                       lambda *_: None, lambda: None)
+    assert len(prompts) == 2
+    assert 'at most 18 words' in prompts[0]
+    assert project['voice_repair_state']['story-sel22']['commentary_generation'] == 2
+    assert project['story_plan']['selections'][2]['narration'] == narration['text']
+    assert project['duration_plan']['schedule']['selections'][2]['narration'] == narration['text']
+    assert project['narrations'][0] == untouched
+    assert project['exports'] == [] and project['preview_exports'] == []
+    assert saved
+
+
+def test_commentary_word_limit_uses_spoken_slot_not_full_clip():
+    assert commentary_word_limit(10.01, 'English') == 37
+    assert commentary_word_limit(10.01 - .04, 'English') == 36
+
+
+def test_commentary_preflight_stops_after_bounded_retries_without_changing_text(monkeypatch, tmp_path):
+    from backend import store
+    project, _ = fixture()
+    project['settings']['language'] = 'English'
+    project['id'] = 'b' * 32
+    narration = dict(id='story-sel22', segment_id='sel22', start=20.0, evidence='SRC_CUES=["2"]\nScene exchange 2',
+                     target_duration=3.96, text='The officers ask the witness to explain what happened near the entrance while the account remains disputed.',
+                     audio='', audio_hash='', duration=0, cues=[])
+    original = narration['text']
+    monkeypatch.setattr(store, 'save', lambda value: value)
+    generations = []
+    def unchanged(prompt, *_args):
+        generations.append(prompt.split('GENERATION ', 1)[1].split('.', 1)[0])
+        return {'text': original}
+    with pytest.raises(ValueError, match='Đã thử sửa riêng đoạn này 4 lần'):
+        repair_commentary_for_voice(project, narration, unchanged, tmp_path,
+                                    lambda *_: None, lambda: None)
+    assert generations == ['1', '2', '3', '4']
+    assert narration['text'] == original
+    assert project['voice_repair_state']['story-sel22']['status'] == 'commentary_repair_failed'
 
 
 def test_last_commentary_stays_near_final_confirmed_scene():

@@ -777,13 +777,10 @@ def synthesize(project, report, check, only_id=None):
             return project
         raise ValueError('Chưa có lời dẫn. Phân tích AI hoặc thêm một đoạn lời dẫn trước.')
     if settings.get('editorial_mode') == 'reaction_cops':
-        from .reaction_cops import commentary_quality_issue, commentary_source_text
+        from .reaction_cops import repair_commentary_for_voice
         for narration in pending:
-            issue = commentary_quality_issue(
-                narration['text'], commentary_source_text(project, narration.get('evidence', '')),
-                narration.get('target_duration', 0), settings['language'])
-            if issue:
-                raise ValueError(f'{narration["id"]}: {issue} Phân tích AI lại trước khi tạo giọng.')
+            check()
+            repair_commentary_for_voice(project, narration, ask_ai, folder, report, check)
     client = None
     repair_budget = RepairBudget()
     for i, narration in enumerate(pending):
