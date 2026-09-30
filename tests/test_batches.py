@@ -138,6 +138,19 @@ def test_reaction_batch_uses_commentary_configuration_for_each_video(database):
     assert stored['opening_delay'] == 0
 
 
+def test_batch_layout_template_is_saved_for_each_video_with_row_override(database):
+    common = settings()
+    common.update(layout_preset='news_slide', show_title=False,
+                  subtitle_position='below', subtitle_top_margin=500)
+    rows = [{'url': URL_A}, {'url': URL_B, 'settings': {'layout_preset': 'classic'}}]
+    batch = batches.create('Layout templates', rows, common)
+    first, second = [store.read(item['project_id'])['settings'] for item in batch['items']]
+    assert first['layout_preset'] == 'news_slide'
+    assert first['show_title'] is False
+    assert first['subtitle_top_margin'] == 500
+    assert second['layout_preset'] == 'classic'
+
+
 def test_batch_runs_in_background_without_browser_polling(database, monkeypatch):
     module = importlib.import_module('backend.app')
     from backend import media
