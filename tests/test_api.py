@@ -44,6 +44,28 @@ def test_revision_conflict_does_not_overwrite_newer_project(client):
     assert store.read(p['id'])['name']=='new title'
 
 
+def test_project_status_reports_jobs_and_change_without_sending_project_body(client):
+    project = store.create('Status', {'kind': 'upload', 'file': 'source.mp4'})
+    endpoint = f"/api/projects/{project['id']}/status"
+    initial = client.get(endpoint)
+    assert initial.status_code == 200
+    assert initial.json() == {'updated': project['updated'], 'preview_version': None, 'jobs': []}
+
+    job_id = store.new_job(project['id'], 'preview')
+    store.update_job(job_id, state='running', progress=42)
+    current = client.get(endpoint).json()
+    assert current['jobs'][0]['id'] == job_id
+    assert current['jobs'][0]['progress'] == 42
+    assert 'settings' not in current
+
+    store.asset(project['id'], 'proxy.mp4').write_bytes(b'preview')
+    assert client.get(endpoint).json()['preview_version'] is not None
+
+    project['name'] = 'Changed'
+    saved = store.save(project)
+    assert client.get(endpoint).json()['updated'] == saved['updated']
+
+
 def test_media_path_cannot_escape_project(client):
     p=store.create('test',{'kind':'upload','file':'source.mp4'})
     with pytest.raises(ValueError):

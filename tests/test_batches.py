@@ -53,6 +53,9 @@ def test_batch_api_creates_snapshots_and_controls_one_item(database):
     batch = created.json()
     assert len(batch['items']) == 2
     assert client.get('/api/batches').json()[0]['id'] == batch['id']
+    assert client.get('/api/batches/overview').json() == [{
+        'id': batch['id'], 'name': batch['name'], 'state': batch['state'],
+        'created': batch['created']}]
     first = batch['items'][0]
     cancelled = client.post(f"/api/batches/{batch['id']}/control",
                             json={'action': 'cancel_item', 'item_id': first['id']}, headers=headers)
@@ -151,6 +154,16 @@ def test_batch_layout_template_is_saved_for_each_video_with_row_override(databas
     assert second['layout_preset'] == 'classic'
 
 
+def test_batch_hook_duration_is_snapshotted_and_can_be_overridden(database):
+    common = settings()
+    common.update(hook_enabled=True, hook_duration=6)
+    batch = batches.create('Hook timing', [{'url': URL_A},
+        {'url': URL_B, 'settings': {'hook_duration': 3.5}}], common)
+    first, second = [store.read(item['project_id'])['settings'] for item in batch['items']]
+    assert first['hook_duration'] == 6
+    assert second['hook_duration'] == 3.5
+
+
 def test_batch_runs_in_background_without_browser_polling(database, monkeypatch):
     module = importlib.import_module('backend.app')
     from backend import media
@@ -200,9 +213,15 @@ def test_batch_scheduler_is_durable_isolated_and_respects_pause(database):
     assert store.read(second['project_id'])['settings']['title'] == 'Second'
     queued = []
     batches.tick(queued.append)
-    assert len(queued) == 2
+    assert len(queued) == 1
+    assert batches.get(batch['id'])['items'][1]['state'] == 'pending'
     batches.control(batch['id'], 'pause')
     store.update_job(queued[0], state='failed', error='Bad URL')
+    batches.tick(queued.append)
+    assert [item['state'] for item in batches.get(batch['id'])['items']] == ['failed', 'pending']
+    batches.control(batch['id'], 'resume')
+    batches.tick(queued.append)
+    assert len(queued) == 2
     store.update_job(queued[1], state='cancelled')
     batches.tick(queued.append)
     assert [item['state'] for item in batches.get(batch['id'])['items']] == ['failed', 'cancelled']
@@ -214,6 +233,64 @@ def test_batch_scheduler_is_durable_isolated_and_respects_pause(database):
     batches.tick(queued.append)
     assert len(queued) == 3
     assert batches.get(batch['id'])['items'][0]['state'] == 'queued'
+
+
+def test_batch_retries_current_video_before_starting_next(database):
+    batch = batches.create('Ordered retry', [{'url': URL_A}, {'url': URL_B}], settings())
+    first, second = batch['items']
+    queued = []
+    batches.tick(queued.append)
+    assert len(queued) == 1
+    assert store.job(queued[0])['project_id'] == first['project_id']
+    failure = 'story-sel26 (1.68s → 1.99s): AI sửa thời lượng không hợp lệ sau giới hạn retry'
+    for attempt in range(1, batches.MAX_AUTO_RETRIES + 1):
+        store.update_job(queued[-1], state='failed', error=failure)
+        batches.tick(queued.append)
+        items = batches.get(batch['id'])['items']
+        assert items[0]['state'] == 'pending' and items[0]['attempts'] == attempt
+        assert items[1]['state'] == 'pending'
+        assert len(queued) == attempt
+        with store.conn() as db:
+            db.execute('UPDATE batch_items SET ready_at=0 WHERE id=?', (first['id'],))
+        batches.tick(queued.append)
+        assert store.job(queued[-1])['project_id'] == first['project_id']
+        assert len(queued) == attempt + 1
+    store.update_job(queued[-1], state='failed', error=failure)
+    batches.tick(queued.append)
+    items = batches.get(batch['id'])['items']
+    assert items[0]['state'] == 'failed'
+    assert items[1]['state'] == 'queued'
+    assert store.job(queued[-1])['project_id'] == second['project_id']
+
+
+def test_different_batches_still_fill_global_worker_capacity(database):
+    first = batches.create('First batch', [{'url': URL_A}, {'url': URL_B}], settings())
+    second = batches.create('Second batch', [{'url': URL_A}], settings())
+    queued = []
+    batches.tick(queued.append)
+    assert len(queued) == 2
+    assert {store.job(jid)['project_id'] for jid in queued} == {
+        first['items'][0]['project_id'], second['items'][0]['project_id']}
+    assert batches.get(first['id'])['items'][1]['state'] == 'pending'
+
+
+def test_batch_starts_next_video_after_current_succeeds(database, monkeypatch):
+    from backend import media
+    batch = batches.create('Ordered success', [{'url': URL_A}, {'url': URL_B}], settings())
+    first, second = batch['items']
+    queued = []
+    batches.tick(queued.append)
+    project = store.read(first['project_id'])
+    store.asset(project['id'], 'finished.mp4').write_bytes(b'valid-mock')
+    project['exports'] = [{'file': 'finished.mp4', 'part': 1}]
+    store.save(project)
+    monkeypatch.setattr(media, 'probe', lambda _path: {
+        'width': 1080, 'has_audio': True, 'duration': 30})
+    store.update_job(queued[0], state='completed')
+    batches.tick(queued.append)
+    assert len(queued) == 2
+    assert store.job(queued[1])['project_id'] == second['project_id']
+    assert [item['state'] for item in batches.get(batch['id'])['items']] == ['completed', 'queued']
 
 
 def test_restart_reclaims_interrupted_batch_job(database):
@@ -378,11 +455,12 @@ def test_excel_template_roundtrip_and_api(database):
     assert rows[0]['settings']['summary_seconds'] == 180
     workbook = Workbook()
     sheet = workbook.active
-    sheet.append(['url', 'title', 'summary_minutes', 'hook_enabled'])
-    sheet.append([URL_B, 'Second', 2, False])
+    sheet.append(['url', 'title', 'summary_minutes', 'hook_enabled', 'hook_duration'])
+    sheet.append([URL_B, 'Second', 2, True, 5.5])
     output = BytesIO()
     workbook.save(output)
     imported = client.post('/api/batches/import-excel', files={'file': ('links.xlsx', output.getvalue())},
                            headers={'X-AIR3view': 'studio'})
     assert imported.status_code == 200
-    assert imported.json()[0]['settings'] == {'summary_seconds': 120, 'hook_enabled': False}
+    assert imported.json()[0]['settings'] == {'summary_seconds': 120, 'hook_enabled': True,
+                                              'hook_duration': 5.5}

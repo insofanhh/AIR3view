@@ -10,12 +10,14 @@ from .models import Settings
 
 
 PREFERENCE_KEY = 'user-defaults'
-LOCAL_FIELDS = {'title', 'editorial_mode', 'hook_enabled', 'hook_start', 'hook_end', 'part_durations',
+LOCAL_FIELDS = {'title', 'editorial_mode', 'hook_enabled', 'hook_duration', 'hook_start', 'hook_end', 'part_durations',
                 'output_mode', 'part_count', 'part_seconds', 'split_mode',
                 'export_mode', 'export_part_count',
                 'production_workflow', 'duration_min_ratio'}
 REFERENCE_FIELD = 'voice_reference'
 SHARED_FIELDS = set(Settings.model_fields) - LOCAL_FIELDS - {REFERENCE_FIELD}
+CONNECTION_FIELDS = {'provider', 'model', 'tts_provider', 'omnivoice_url',
+                     'vieneu_device', 'asr_model', 'asr_device'}
 REFERENCE_EXTENSIONS = {'.wav', '.mp3', '.m4a', '.ogg', '.flac'}
 
 
@@ -233,6 +235,24 @@ def status():
         'has_voice_reference': has_reference,
         'settings': settings,
     }
+
+
+def save_connection(values):
+    """Update global connection defaults without replacing unrelated settings."""
+    invalid = set(values) - CONNECTION_FIELDS
+    if invalid:
+        raise ValueError('Chỉ có thể lưu các trường trong mục Kết nối.')
+    with store.LOCK:
+        preference = current()
+        normalized = _normalized({**preference['settings'], **values})
+        body = {key: preference[key] for key in ('version', 'settings', 'reference', 'export_destination')}
+        body['settings'] = {**body['settings'],
+                            **{key: normalized[key] for key in values}}
+        updated = time.time()
+        with store.conn() as db:
+            db.execute('UPDATE preferences SET body=?, updated=? WHERE key=?',
+                       (json.dumps(body, ensure_ascii=False), updated, PREFERENCE_KEY))
+    return status()
 
 
 def remember_export_destination(directory='', drive=''):

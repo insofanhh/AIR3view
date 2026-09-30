@@ -81,6 +81,7 @@ class Settings(Model):
     voice_volume: float = Field(default=1, ge=0, le=2)
     narration_mode: Literal['overlay', 'insert'] = 'overlay'
     hook_enabled: bool = False
+    hook_duration: float | None = Field(default=None, ge=3, le=7)
     hook_start: float = Field(default=0, ge=0)
     hook_end: float = Field(default=5, gt=0)
     # Editorial planning always makes one complete video. Splitting is an

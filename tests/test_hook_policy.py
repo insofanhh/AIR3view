@@ -1,6 +1,6 @@
 import copy
 import pytest
-from backend.hook_policy import source_hook, slots, set_text, VERSION
+from backend.hook_policy import source_hook, fit_hook_duration, slots, set_text, VERSION
 from backend.plan_first import lock_schedule, plan_first, contract_check
 from backend import providers
 from backend.story import validate_plan
@@ -14,6 +14,7 @@ def test_real_conflict_hook_keeps_sound_even_if_it_consumes_body_budget():
     p,raw=sample()
     p['hook_policy_version']=VERSION
     p['settings']['original_dialogue_ratio']=.1
+    p['settings']['hook_duration']=3
     p['source_speech']['items'][1]['hook_score']=.95
     hook=source_hook(p)
     assert (hook['start'],hook['end'])==(14,17)
@@ -42,10 +43,48 @@ def test_commentary_and_uncertain_speakers_never_become_original_hook():
 
 def test_short_scream_can_include_safe_context_without_a_three_second_utterance():
     p,_=sample()
+    p['settings']['hook_duration']=3
     p['source_speech']['items'][1].update(end=14.6,text='[screaming]',hook_score=.98)
     hook=source_hook(p)
     assert hook is not None and hook['end']-hook['start']==3
     assert hook['start']<=14 and hook['end']>=14.6
+
+
+def test_requested_duration_keeps_real_hook_selection_evidence_first():
+    p,_=sample()
+    p['settings']['hook_duration']=6
+    p['source_speech']['items'][1]['hook_score']=.98
+    hook=source_hook(p)
+    assert hook is not None
+    assert hook['end']-hook['start']==pytest.approx(6)
+    assert hook['start']<=14 and hook['end']>=17
+    assert hook['original_audio'] and hook['narration']==''
+
+
+def test_ai_hook_duration_fits_selected_moment_and_source_boundary():
+    p,_=sample()
+    p['settings']['hook_duration']=6
+    hook=fit_hook_duration(dict(start=96,end=100,title='Situation',reason='Evidence'),p)
+    assert (hook['start'],hook['end'])==(94,100)
+
+
+def test_hook_duration_setting_is_bounded():
+    from backend.models import Settings
+    for seconds in (2.5,7.5):
+        with pytest.raises(ValueError):
+            Settings(hook_duration=seconds)
+
+
+def test_fixed_hook_duration_invalidates_plan_without_changing_auto_default():
+    from backend.story import plan_fingerprint
+    p,_=sample()
+    p['settings'].update(production_workflow='plan_first',hook_enabled=True)
+    automatic=plan_fingerprint(p)
+    p['settings']['hook_duration']=5
+    fixed=plan_fingerprint(p)
+    assert fixed!=automatic
+    p['settings']['hook_duration']=6
+    assert plan_fingerprint(p)!=fixed
 
 
 def test_context_padding_does_not_include_source_narrator():
@@ -58,6 +97,7 @@ def test_context_padding_does_not_include_source_narrator():
 
 def test_ai_hook_is_timed_generated_and_captioned_from_output_zero(environment):
     p,_,_,_=environment
+    p['settings']['hook_duration']=4
     out=plan_first(p,lambda *a:None,lambda:None)
     hook=out['story_plan']['hook']
     assert not hook['original_audio'] and hook['narration']!='__write_hook__'
@@ -76,6 +116,16 @@ def test_ai_hook_is_timed_generated_and_captioned_from_output_zero(environment):
     assert tl['source_mutes'][0]==dict(start=0,end=4)
     assert tl['duration']==42  # Hook voice does not add playback time.
     contract_check(out)
+
+
+def test_plan_first_ai_hook_uses_configured_duration(environment):
+    p,_,_,_=environment
+    p['settings']['hook_duration']=6
+    out=plan_first(p,lambda *a:None,lambda:None)
+    hook=out['story_plan']['hook']
+    assert not hook['original_audio']
+    assert hook['end']-hook['start']==pytest.approx(6)
+    assert next(n for n in out['narrations'] if n['segment_id']=='hook')['target_duration']==pytest.approx(5.96)
 
 
 def test_export_rejects_deleted_or_disabled_ai_hook(environment):

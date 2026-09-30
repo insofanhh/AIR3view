@@ -90,6 +90,7 @@ def test_contract_blocks_missing_plan_or_changed_slots(environment):
 
 def test_multipart_locks_every_part_and_counts_hook_once(environment):
     p,footage,_,_=environment
+    p['settings']['hook_duration']=4
     p['settings'].update(output_mode='parts',part_count=2,part_seconds=30)
     footage['selections']=[dict(start=a,end=b,part=part,section=section,reason='Source',priority=.9,
         evidence='Source statement',keep_original=False) for a,b,section,part in

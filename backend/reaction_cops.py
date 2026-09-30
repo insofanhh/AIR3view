@@ -732,7 +732,9 @@ def plan_reaction(project, report, check):
         raise ValueError(NOT_ENOUGH)
     selected_hook = source_hook(candidate) if settings.get('hook_enabled') else None
     if settings.get('hook_enabled') and selected_hook is None:
-        raise ValueError('Hook đã bật nhưng không có cảnh 3–7 giây chứa xung đột, phản ứng hoặc tiếng thật hiện trường đã xác minh. Hãy tắt hook hoặc dùng nguồn khác.')
+        requested = settings.get('hook_duration')
+        length = f'{requested:g} giây' if requested is not None else '3–7 giây'
+        raise ValueError(f'Hook đã bật nhưng không có cảnh {length} chứa xung đột, phản ứng hoặc tiếng thật hiện trường đã xác minh. Hãy chọn thời lượng khác, tắt hook hoặc dùng nguồn khác.')
     hook = selected_hook or dict(start=0,end=0,title='',reason='Hook tắt',original_audio=False,narration='')
     count,target = output_budget(settings,candidate['metadata']['duration'])
     desired_commentary = settings.get('reaction_commentary_count', 5)

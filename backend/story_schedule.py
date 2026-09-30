@@ -48,6 +48,9 @@ def schedule(raw, project, *, locked_roles=False):
     if classified:
         from .hook_policy import prepare_hook
         hook = result['hook'] = prepare_hook(hook,project)
+    elif project['settings'].get('hook_duration') is not None and not hook.get('original_audio', True):
+        from .hook_policy import fit_hook_duration
+        hook = result['hook'] = fit_hook_duration(hook, project)
     hook_ticks = _ticks(hook['end']) - _ticks(hook['start'])
     total_ticks = hook_ticks + sum(_ticks(x['end']) - _ticks(x['start']) for x in selections)
     original_hook_ticks = hook_ticks if hook.get('original_audio', True) else 0

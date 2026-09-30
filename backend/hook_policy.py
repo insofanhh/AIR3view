@@ -29,11 +29,13 @@ def source_hook(project):
     if not project['metadata'].get('has_audio', True):
         return None
     duration = project['metadata']['duration']
+    requested = project['settings'].get('hook_duration')
     candidates=[]
     for cue in participants(project):
-        if cue.get('hook_score',0) < .7 or cue['end']-cue['start'] > 7:
+        if cue.get('hook_score',0) < .7 or cue['end']-cue['start'] > (requested or 7) + .001:
             continue
-        length=max(3,round((cue['end']-cue['start'])*30)/30)
+        length = (round(requested * 30) / 30 if requested is not None else
+                  max(3, round((cue['end']-cue['start']) * 30) / 30))
         # Try balanced and one-sided context; never cut into excluded speech.
         for start in (cue['start']-(length-(cue['end']-cue['start']))/2, cue['start'],cue['end']-length):
             a=round(max(0,min(start,duration-length))*30)/30
@@ -45,11 +47,26 @@ def source_hook(project):
     return max(candidates,key=lambda x:x[:4])[-1] if candidates else None
 
 
+def fit_hook_duration(proposed, project):
+    """Keep the AI-selected moment but fit its clip to the requested length."""
+    result = copy.deepcopy(proposed)
+    requested = project['settings'].get('hook_duration')
+    if requested is None:
+        return result
+    target = round(requested * 30)
+    source_end = round(project['metadata']['duration'] * 30)
+    if source_end < target:
+        raise ValueError('Video nguồn ngắn hơn thời lượng hook đã chọn.')
+    start = max(0, min(round(result['start'] * 30), source_end - target))
+    result.update(start=start / 30, end=(start + target) / 30)
+    return result
+
+
 def prepare_hook(proposed, project):
     chosen=source_hook(project)
     if chosen:
         return {**chosen,'title':proposed['title']}
-    return {**copy.deepcopy(proposed),'original_audio':False,'narration':'__write_hook__'}
+    return {**fit_hook_duration(proposed, project),'original_audio':False,'narration':'__write_hook__'}
 
 
 def slots(plan):

@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import {ArrowLeft, Download, FileSpreadsheet, FolderOpen, LoaderCircle, Pause, Play, Plus, RefreshCw, Upload, X} from 'lucide-react';
 import './batch.css';
 import {ExportDirectoryPicker} from './ExportDirectoryPicker';
@@ -8,6 +8,7 @@ type Project = {id:string;name:string;settings:Record<string,any>};
 type Row = {url:string;title:string;settings:Record<string,any>;settingsText:string;row?:number};
 type Item = {id:string;position:number;project_id:string;url:string;title:string;state:string;progress:number;message:string;error:string;attempts:number;ready_at:number;retry_limit:number;export_state:string;export_progress:number;export_error:string;export_message:string;export_folder:string;exports:{file:string;part:number}[]};
 type Batch = {id:string;name:string;state:string;created:number;items:Item[]};
+type BatchOverview = Pick<Batch,'id'|'name'|'state'|'created'>;
 type Preview = {row:number;url:string;valid:boolean;error:string};
 type YouTubeAuth = {mode:'none'|'chrome'|'edge'|'file';has_cookie_file:boolean};
 
@@ -30,7 +31,7 @@ const layoutOptions=[
 const rowFrom=(value:{url:string;title?:string;settings?:Record<string,any>;row?:number}):Row=>({url:value.url,title:value.title||'',settings:value.settings||{},settingsText:JSON.stringify(value.settings||{},null,2),row:value.row});
 
 export function BatchWorkspace({projects,onBack,onOpen,updating=false}:{projects:Project[];onBack:()=>void;onOpen:(id:string)=>void;updating?:boolean}){
-  const [batches,setBatches]=useState<Batch[]>([]),[selected,setSelected]=useState('');
+  const [batches,setBatches]=useState<BatchOverview[]>([]),[selected,setSelected]=useState(''),[current,setCurrent]=useState<Batch|null>(null);
   const [name,setName]=useState('Lô video YouTube'),[raw,setRaw]=useState(''),[rows,setRows]=useState<Row[]>([]),[preview,setPreview]=useState<Preview[]>([]);
   const [settings,setSettings]=useState<Record<string,any>>({}),[profile,setProfile]=useState(''),[advanced,setAdvanced]=useState('');
   const [reference,setReference]=useState<{token:string;name:string}|null>(null);
@@ -38,7 +39,9 @@ export function BatchWorkspace({projects,onBack,onOpen,updating=false}:{projects
   const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
   const [storage,setStorage]=useState<{default:string;recent?:string;recent_drive?:string}>({default:''});
   const [exportTarget,setExportTarget]=useState<string|null|undefined>(undefined),[exportMode,setExportMode]=useState<'single'|'parts'>('single'),[exportCount,setExportCount]=useState(2),[exportDirectory,setExportDirectory]=useState(''),[exportDrive,setExportDrive]=useState(''),[exportBusy,setExportBusy]=useState(false);
-  const current=batches.find(x=>x.id===selected);
+  const pollBatchesNow=useRef<(()=>Promise<void>)|null>(null);
+  const selectedRef=useRef(selected);
+  selectedRef.current=selected;
   const set=(key:string,value:any)=>setSettings(s=>({...s,[key]:value}));
   const selectLayout=(preset:string)=>setSettings(s=>({...s,layout_preset:preset,
     background_mode:preset==='reference'?'blur':'color',fit:preset==='classic'?'contain':'cover',
@@ -46,14 +49,50 @@ export function BatchWorkspace({projects,onBack,onOpen,updating=false}:{projects
     subtitle_top_margin:preset==='news_slide'?500:preset==='reference'?30:60,
     title_size:preset==='news_slide'?70:preset==='reference'?36:54,
     subtitle_color:preset==='news_slide'?'#111111':'#ffffff'}));
-  const refresh=async()=>{const list=await request<Batch[]>('/batches');setBatches(list);setSelected(id=>id||list[0]?.id||'');};
-  useEffect(()=>{if(updating){setError('');return;}let active=true,initialized=false,loading=false;
-    const load=async()=>{if(loading)return;loading=true;try{
-      const [defaults,list]=await Promise.all([request<{settings:Record<string,any>;source_project_id:string|null}>('/batches/defaults'),request<Batch[]>('/batches')]);
-      if(!active)return;setSettings(defaults.settings);setProfile(defaults.source_project_id||'');setBatches(list);setSelected(list[0]?.id||'');setError('');initialized=true;
-    }catch(e){if(active)setError(String(e));}finally{loading=false;}};
-    void load();const id=window.setInterval(()=>{if(!initialized){void load();return;}request<Batch[]>('/batches').then(list=>{if(active)setBatches(list);}).catch(e=>{if(active){initialized=false;setError(String(e));}});},2000);
-    return()=>{active=false;clearInterval(id);};},[updating]);
+  const refresh=async()=>{if(pollBatchesNow.current)await pollBatchesNow.current();};
+  useEffect(()=>{if(updating){setError('');return;}
+    let active=true,initialized=false,failures=0,pollError='',timer:number|undefined,inFlight:Promise<void>|null=null;
+    let overview:BatchOverview[]=[],overviewAt=0;
+    const schedule=(delay:number)=>{window.clearTimeout(timer);if(active&&!document.hidden)timer=window.setTimeout(()=>void poll(),delay);};
+    const poll=async(force=false):Promise<void>=>{
+      if(!active||(!force&&document.hidden))return;
+      if(inFlight){if(force){await inFlight;return poll(true);}return;}
+      window.clearTimeout(timer);
+      const task=(async()=>{
+        try{
+          if(!initialized){
+            const [defaults,list]=await Promise.all([request<{settings:Record<string,any>;source_project_id:string|null}>('/batches/defaults'),request<BatchOverview[]>('/batches/overview')]);
+            if(!active)return;
+            setSettings(defaults.settings);setProfile(defaults.source_project_id||'');overview=list;overviewAt=Date.now();initialized=true;
+          }else if(force||Date.now()-overviewAt>=30000){
+            overview=await request<BatchOverview[]>('/batches/overview');overviewAt=Date.now();
+          }
+          if(!active)return;
+          setBatches(overview);
+          const target=selectedRef.current||overview[0]?.id||'';
+          if(!selectedRef.current&&target){selectedRef.current=target;setSelected(target);}
+          if(target){
+            const detail=await request<Batch>('/batches/'+target);
+            if(!active||selectedRef.current!==target)return;
+            setCurrent(detail);
+            schedule(detail.state==='running'||detail.items.some(item=>['queued','running'].includes(item.state)||['queued','running'].includes(item.export_state))?2000:30000);
+          }else{
+            setCurrent(null);schedule(30000);
+          }
+          failures=0;
+          if(pollError){setError(old=>old===pollError?'':old);pollError='';}
+        }catch(e){if(active){pollError=String(e);setError(pollError);failures++;schedule(Math.min(60000,2000*2**Math.min(failures,5)));}}
+      })();
+      inFlight=task;
+      try{await task;}finally{if(inFlight===task)inFlight=null;}
+    };
+    const onVisibility=()=>{if(document.hidden)window.clearTimeout(timer);else void poll(true);};
+    document.addEventListener('visibilitychange',onVisibility);
+    pollBatchesNow.current=()=>poll(true);
+    void poll();
+    return()=>{active=false;window.clearTimeout(timer);document.removeEventListener('visibilitychange',onVisibility);pollBatchesNow.current=null;};
+  },[updating]);
+  const selectBatch=(id:string)=>{selectedRef.current=id;setSelected(id);setCurrent(null);void pollBatchesNow.current?.();};
   useEffect(()=>{let active=true;request<YouTubeAuth>('/youtube/auth').then(auth=>{if(active)setYoutubeAuth(auth);}).catch(e=>{if(active)setError('Không đọc được phiên xác thực YouTube: '+String(e));});return()=>{active=false;};},[]);
   useEffect(()=>setAdvanced(JSON.stringify(settings,null,2)),[settings]);
   useEffect(()=>{request<{default:string}>('/export/storage').then(setStorage).catch(e=>setError(String(e)));},[]);
@@ -78,7 +117,7 @@ export function BatchWorkspace({projects,onBack,onOpen,updating=false}:{projects
     const checked=await validate();if(!checked||checked.some(r=>!r.valid))throw new Error('Sửa các URL lỗi trong bảng trước khi chạy.');
     const submitted=submittedRows();
     const result=await request<Batch>('/batches',{method:'POST',body:JSON.stringify({name,items:submitted,settings,source_project_id:profile||null,reference_token:settings.voice_mode==='clone'?reference?.token||null:null})});
-    setRows([]);setPreview([]);setSelected(result.id);await refresh();setNotice('Đã đưa lô vào hàng đợi nền.');
+    setRows([]);setPreview([]);selectedRef.current=result.id;setSelected(result.id);setCurrent(result);await refresh();setNotice('Đã đưa lô vào hàng đợi nền.');
   }catch(e){setError(String(e));}finally{setBusy(false);}};
   const control=async(action:'pause'|'resume'|'cancel'|'cancel_item'|'retry',item_id?:string)=>{setError('');try{await request('/batches/'+selected+'/control',{method:'POST',body:JSON.stringify({action,item_id})});await refresh();}catch(e){setError(String(e));}};
   return <section className="batch-workspace">
@@ -88,7 +127,7 @@ export function BatchWorkspace({projects,onBack,onOpen,updating=false}:{projects
       <fieldset className="batch-youtube-auth"><legend>Phiên xác thực YouTube</legend><label>Cách tải video<select value={youtubeAuth.mode} disabled={youtubeAuthBusy} onChange={e=>void changeYoutubeAuth(e.target.value as YouTubeAuth['mode'])}><option value="none">Không dùng đăng nhập</option><option value="chrome">Chrome đã đăng nhập</option><option value="edge">Edge đã đăng nhập</option><option value="file" disabled={!youtubeAuth.has_cookie_file}>File cookies.txt đã tải lên</option></select></label><label className="batch-file"><Upload size={14}/> {youtubeAuthBusy?'Đang lưu…':youtubeAuth.has_cookie_file?'Thay cookies.txt':'Tải cookies.txt'}<input type="file" accept=".txt,text/plain" disabled={youtubeAuthBusy} onChange={e=>{const file=e.target.files?.[0];if(file)void uploadYoutubeCookies(file);e.target.value='';}}/></label><p className="batch-hint">Dùng chung với luồng một video trên máy này. Thay đổi áp dụng cho lượt tải YouTube tiếp theo; không lưu nội dung cookie trong dự án hoặc lô.</p></fieldset>
       <h3>Cấu hình chung</h3><p className="batch-hint">Chọn một dự án làm mẫu để dùng toàn bộ setting và giọng mẫu của dự án đó. AIR3view lưu riêng cấu hình cho từng video khi bắt đầu.</p><label>Áp dụng cấu hình từ dự án<select value={profile} onChange={e=>applyProfile(e.target.value)}><option value="">Mặc định hiện tại</option>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
       <fieldset className="batch-layout-picker"><legend>Mẫu bố cục cho cả lô</legend><div className="batch-layout-options">{layoutOptions.map(option=><button type="button" key={option.id} aria-pressed={(settings.layout_preset||'reference')===option.id} className={'batch-layout-option '+((settings.layout_preset||'reference')===option.id?'selected':'')} onClick={()=>selectLayout(option.id)}><span className={'batch-layout-preview '+option.id} aria-hidden="true"><i className="preview-title"/><i className="preview-video"/><i className="preview-caption"/></span><strong>{option.label}</strong><small>{option.description}</small></button>)}</div><p className="batch-hint">Áp dụng cho mọi video trong lô. Cấu hình riêng của từng dòng có thể ghi đè mẫu này.</p></fieldset>
-      <div className="batch-settings"><label>Chế độ<select value={settings.editorial_mode||'standard'} onChange={e=>setSettings(previous=>({...previous,editorial_mode:e.target.value,production_workflow:'plan_first',narration_style:'storytelling',opening_delay:0,...(e.target.value==='reaction_cops'?{hook_enabled:false}:{})}))}><option value="standard">Kể tình huống</option><option value="reaction_cops">Reaction COPS</option></select></label><label>AI provider<select value={settings.provider||'codex'} onChange={e=>set('provider',e.target.value)}><option value="codex">Codex</option><option value="openai">OpenAI API</option><option value="gemini">Gemini API</option></select></label><label>Model<input value={settings.model||''} onChange={e=>set('model',e.target.value)} placeholder="Model đã cấu hình"/></label><label>Thời lượng mong muốn (phút, 0 = nguồn)<NumberInput aria-label="Thời lượng mong muốn" min={0} max={30} step={0.5} value={(settings.summary_seconds||0)/60} onChange={value=>set('summary_seconds',value*60)}/></label>{settings.editorial_mode==='reaction_cops'?<label>Số COMMENTARY<NumberInput aria-label="Số COMMENTARY" integer min={1} max={10} value={settings.reaction_commentary_count??5} onChange={value=>set('reaction_commentary_count',value)}/></label>:<label>Tỉ lệ thoại gốc (%)<NumberInput aria-label="Tỉ lệ thoại gốc" integer min={10} max={100} value={Math.round((settings.original_dialogue_ratio??.15)*100)} onChange={value=>set('original_dialogue_ratio',value/100)}/></label>}<label>Giọng đọc<select value={settings.tts_provider||'vieneu'} onChange={e=>set('tts_provider',e.target.value)}><option value="vieneu">VieNeu SDK</option><option value="omnivoice">OmniVoice</option></select></label><label>Tốc độ giọng<NumberInput aria-label="Tốc độ giọng" min={0.5} max={1.5} step={0.05} value={settings.voice_speed??1} onChange={value=>set('voice_speed',value)}/></label><label>Chế độ xuất<select value={settings.export_mode||'single'} onChange={e=>set('export_mode',e.target.value)}><option value="single">Một video</option><option value="parts">Chia phần</option></select></label>{settings.export_mode==='parts'&&<label>Số phần<NumberInput aria-label="Số phần" integer min={2} max={100} value={settings.export_part_count??2} onChange={value=>set('export_part_count',value)}/></label>}<label className="batch-check"><input type="checkbox" checked={!!settings.hook_enabled} onChange={e=>set('hook_enabled',e.target.checked)}/> Bật hook</label><label className="batch-check"><input type="checkbox" checked={!!settings.subtitles} onChange={e=>set('subtitles',e.target.checked)}/> Phụ đề</label></div>
+      <div className="batch-settings"><label>Chế độ<select value={settings.editorial_mode||'standard'} onChange={e=>setSettings(previous=>({...previous,editorial_mode:e.target.value,production_workflow:'plan_first',narration_style:'storytelling',opening_delay:0,...(e.target.value==='reaction_cops'?{hook_enabled:false}:{})}))}><option value="standard">Kể tình huống</option><option value="reaction_cops">Reaction COPS</option></select></label><label>AI provider<select value={settings.provider||'codex'} onChange={e=>set('provider',e.target.value)}><option value="codex">Codex</option><option value="openai">OpenAI API</option><option value="gemini">Gemini API</option></select></label><label>Model<input value={settings.model||''} onChange={e=>set('model',e.target.value)} placeholder="Model đã cấu hình"/></label><label>Thời lượng mong muốn (phút, 0 = nguồn)<NumberInput aria-label="Thời lượng mong muốn" min={0} max={30} step={0.5} value={(settings.summary_seconds||0)/60} onChange={value=>set('summary_seconds',value*60)}/></label>{settings.editorial_mode==='reaction_cops'?<label>Số COMMENTARY<NumberInput aria-label="Số COMMENTARY" integer min={1} max={10} value={settings.reaction_commentary_count??5} onChange={value=>set('reaction_commentary_count',value)}/></label>:<label>Tỉ lệ thoại gốc (%)<NumberInput aria-label="Tỉ lệ thoại gốc" integer min={10} max={100} value={Math.round((settings.original_dialogue_ratio??.15)*100)} onChange={value=>set('original_dialogue_ratio',value/100)}/></label>}<label>Giọng đọc<select value={settings.tts_provider||'vieneu'} onChange={e=>set('tts_provider',e.target.value)}><option value="vieneu">VieNeu SDK</option><option value="omnivoice">OmniVoice</option></select></label><label>Tốc độ giọng<NumberInput aria-label="Tốc độ giọng" min={0.5} max={1.5} step={0.05} value={settings.voice_speed??1} onChange={value=>set('voice_speed',value)}/></label><label>Chế độ xuất<select value={settings.export_mode||'single'} onChange={e=>set('export_mode',e.target.value)}><option value="single">Một video</option><option value="parts">Chia phần</option></select></label>{settings.export_mode==='parts'&&<label>Số phần<NumberInput aria-label="Số phần" integer min={2} max={100} value={settings.export_part_count??2} onChange={value=>set('export_part_count',value)}/></label>}<label className="batch-check"><input type="checkbox" checked={!!settings.hook_enabled} onChange={e=>set('hook_enabled',e.target.checked)}/> Bật hook</label>{settings.hook_enabled&&<label>Thời lượng hook<select aria-label="Thời lượng hook trong lô" value={settings.hook_duration??''} onChange={e=>set('hook_duration',e.target.value===''?null:Number(e.target.value))}><option value="">Tự động · 3–7 giây</option>{Array.from({length:9},(_,i)=>3+i*0.5).map(seconds=><option key={seconds} value={seconds}>{seconds} giây</option>)}</select></label>}<label className="batch-check"><input type="checkbox" checked={!!settings.subtitles} onChange={e=>set('subtitles',e.target.checked)}/> Phụ đề</label></div>
       <ExportDirectoryPicker directory={settings.export_directory||(settings.export_drive?`${settings.export_drive}\\AIR3view Exports`:'')} defaultDirectory={storage.default} onChange={directory=>setSettings(previous=>({...previous,export_directory:directory,export_drive:''}))}/>
       <details className="batch-advanced"><summary>Giọng, âm thanh, phụ đề, bố cục và rules</summary>
         <div className="batch-settings">
@@ -122,7 +161,7 @@ export function BatchWorkspace({projects,onBack,onOpen,updating=false}:{projects
     </div>
     <div className="batch-panel"><h2>Danh sách chờ <span>{rows.length}</span></h2>{!rows.length?<p className="batch-empty">Nhập URL hoặc Excel để thêm video.</p>:<div className="batch-row-list">{rows.map((row,i)=><div className="batch-draft" key={i}><div className="batch-draft-top"><b>{i+1}</b><span className={preview[i]?.valid===false?'invalid':'valid'}>{preview[i]?.valid===false?preview[i].error:preview[i]?.valid?'Hợp lệ':'Chưa kiểm tra'}</span><button title="Bỏ video" onClick={()=>{setRows(old=>old.filter((_,j)=>j!==i));setPreview([]);}}><X size={14}/></button></div><input aria-label={'URL video '+(i+1)} value={row.url} onChange={e=>patchRow(i,{url:e.target.value})}/><input aria-label={'Tên video '+(i+1)} placeholder="Tên dự án (tùy chọn)" value={row.title} onChange={e=>patchRow(i,{title:e.target.value})}/><details><summary>Cấu hình riêng</summary><textarea aria-label={'Cấu hình video '+(i+1)} rows={4} value={row.settingsText} onChange={e=>patchRow(i,{settingsText:e.target.value})}/><small>Ví dụ: {`{"summary_seconds":120,"hook_enabled":false}`}</small></details></div>)}</div>}</div></div>
     <div className="batch-panel batch-monitor">
-      <div className="batch-monitor-head"><h2>Theo dõi lô</h2><select aria-label="Chọn lô" value={selected} onChange={e=>setSelected(e.target.value)}><option value="">Chọn lô</option>{batches.map(batch=><option value={batch.id} key={batch.id}>{batch.name} · {new Date(batch.created*1000).toLocaleDateString()}</option>)}</select>{current&&<><button className="secondary" disabled={current.state!=='running'} onClick={()=>void control('pause')}><Pause size={14}/> Tạm dừng</button><button className="secondary" disabled={current.state!=='paused'} onClick={()=>void control('resume')}><Play size={14}/> Tiếp tục</button><button className="secondary" disabled={!['running','paused'].includes(current.state)} onClick={()=>void control('cancel')}>Hủy lô</button><button className="secondary" disabled={!current.items.length||current.items.some(item=>item.state!=='completed'||['queued','running'].includes(item.export_state))} onClick={()=>openExport()}><Download size={14}/> Xuất toàn bộ</button></>}</div>
+      <div className="batch-monitor-head"><h2>Theo dõi lô</h2><select aria-label="Chọn lô" value={selected} onChange={e=>selectBatch(e.target.value)}><option value="">Chọn lô</option>{batches.map(batch=><option value={batch.id} key={batch.id}>{batch.name} · {new Date(batch.created*1000).toLocaleDateString()}</option>)}</select>{current&&<><button className="secondary" disabled={current.state!=='running'} onClick={()=>void control('pause')}><Pause size={14}/> Tạm dừng</button><button className="secondary" disabled={current.state!=='paused'} onClick={()=>void control('resume')}><Play size={14}/> Tiếp tục</button><button className="secondary" disabled={!['running','paused'].includes(current.state)} onClick={()=>void control('cancel')}>Hủy lô</button><button className="secondary" disabled={!current.items.length||current.items.some(item=>item.state!=='completed'||['queued','running'].includes(item.export_state))} onClick={()=>openExport()}><Download size={14}/> Xuất toàn bộ</button></>}</div>
       {current?<><p className="batch-hint">{current.items.filter(x=>x.state==='completed').length}/{current.items.length} hoàn tất · {current.items.filter(x=>x.state==='running').length} đang chạy · {current.items.filter(x=>x.state==='failed').length} lỗi · Trạng thái lô: {current.state}. Tạm dừng chỉ ngăn video mới bắt đầu; video đang chạy vẫn hoàn tất.</p>
         <div className="batch-table-wrap"><table><thead><tr><th>#</th><th>Video</th><th>Trạng thái</th><th>Tiến trình</th><th>Kết quả / thao tác</th></tr></thead><tbody>{current.items.map(item=><tr key={item.id}>
           <td>{item.position}</td><td><strong>{item.title}</strong><small>{item.url}</small></td>

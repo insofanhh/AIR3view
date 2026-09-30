@@ -285,6 +285,13 @@ def list_batches():
     return [get(batch_id) for batch_id in ids]
 
 
+def list_batch_overview():
+    """Small list for the batch selector; details are loaded for one batch."""
+    with store.conn() as db:
+        return [dict(row) for row in db.execute(
+            'SELECT id,name,state,created FROM batches ORDER BY created DESC')]
+
+
 def control(batch_id, action, item_id=None):
     if action not in ('pause', 'resume', 'cancel', 'cancel_item', 'retry'):
         raise ValueError('Thao tác lô không hợp lệ.')
@@ -387,13 +394,33 @@ def tick(enqueue):
             db.execute("UPDATE batches SET state='completed_with_errors' WHERE state='running' AND id NOT IN (SELECT batch_id FROM batch_items WHERE state IN ('pending','queued','running')) AND id IN (SELECT batch_id FROM batch_items WHERE state IN ('failed','cancelled'))")
             db.execute("UPDATE batches SET state='completed' WHERE state='running' AND id NOT IN (SELECT batch_id FROM batch_items WHERE state IN ('pending','queued','running'))")
             capacity = max(0, MAX_ACTIVE - db.execute("SELECT COUNT(*) FROM jobs WHERE state IN ('queued','running')").fetchone()[0])
-            pending = db.execute("SELECT bi.* FROM batch_items bi JOIN batches b ON b.id=bi.batch_id WHERE b.state='running' AND bi.state='pending' AND bi.ready_at<=? ORDER BY b.created,bi.position LIMIT ?", (time.time(), capacity)).fetchall()
+            # Within a batch, the earliest unfinished video owns the lane,
+            # including its retry cooldown. Other batches can still use the
+            # remaining global worker capacity.
+            pending = db.execute("""SELECT bi.* FROM batch_items bi
+                JOIN batches b ON b.id=bi.batch_id
+                WHERE b.state='running' AND bi.state='pending' AND bi.ready_at<=?
+                  AND NOT EXISTS (SELECT 1 FROM batch_items earlier
+                                  WHERE earlier.batch_id=bi.batch_id
+                                    AND earlier.position<bi.position
+                                    AND earlier.state IN ('pending','queued','running'))
+                  AND NOT EXISTS (SELECT 1 FROM batch_items active
+                                  WHERE active.batch_id=bi.batch_id
+                                    AND active.state IN ('queued','running'))
+                ORDER BY b.created,bi.position LIMIT ?""", (time.time(), capacity)).fetchall()
         for row in pending:
             with store.conn() as db:
                 db.execute('BEGIN IMMEDIATE')
                 batch = db.execute('SELECT state FROM batches WHERE id=?', (row['batch_id'],)).fetchone()
-                item = db.execute('SELECT state FROM batch_items WHERE id=?', (row['id'],)).fetchone()
-                if not batch or batch['state'] != 'running' or not item or item['state'] != 'pending':
+                item = db.execute('SELECT state,ready_at,position FROM batch_items WHERE id=?', (row['id'],)).fetchone()
+                if (not batch or batch['state'] != 'running' or not item or item['state'] != 'pending'
+                        or item['ready_at'] > time.time()):
+                    continue
+                if db.execute("""SELECT 1 FROM batch_items
+                                 WHERE batch_id=? AND (
+                                   (position<? AND state IN ('pending','queued','running'))
+                                   OR state IN ('queued','running'))""",
+                              (row['batch_id'], item['position'])).fetchone():
                     continue
                 if db.execute("SELECT 1 FROM jobs WHERE project_id=? AND state IN ('queued','running')", (row['project_id'],)).fetchone():
                     continue

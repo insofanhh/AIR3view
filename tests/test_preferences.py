@@ -48,6 +48,27 @@ def edit_payload(project):
     return {key: project[key] for key in ('revision', 'name', 'settings', 'narrations', 'transcript')}
 
 
+def test_connection_defaults_can_be_saved_without_opening_a_project(client):
+    existing = store.create('Existing', {'kind': 'upload', 'file': 'source.mp4'})
+    original = client.get('/api/preferences').json()['settings']
+    changed = client.patch('/api/preferences/connection', headers=HEADERS, json={
+        'provider': 'gemini', 'model': 'gemini-2.5-flash', 'tts_provider': 'vieneu',
+        'vieneu_device': 'auto', 'asr_model': 'medium', 'asr_device': 'cpu',
+        'omnivoice_url': 'http://127.0.0.1:8001'})
+    assert changed.status_code == 200
+    saved = changed.json()['settings']
+    assert saved['provider'] == 'gemini' and saved['model'] == 'gemini-2.5-flash'
+    assert saved['vieneu_device'] == 'auto' and saved['asr_model'] == 'medium'
+    assert saved['background'] == original['background']
+    assert store.read(existing['id'])['settings']['provider'] == original['provider']
+    assert store.create('Next', {'kind': 'upload', 'file': 'next.mp4'})['settings']['provider'] == 'gemini'
+    assert client.get('/api/batches/defaults').json()['settings']['model'] == 'gemini-2.5-flash'
+    assert client.patch('/api/preferences/connection', headers=HEADERS,
+                        json={'background': '#000000'}).status_code == 422
+    assert client.patch('/api/preferences/connection', headers=HEADERS,
+                        json={'provider': 'invalid'}).status_code == 422
+
+
 def test_user_save_promotes_shared_fields_and_apply_preserves_source_fields(client):
     source = store.create('Source', {'kind': 'upload', 'file': 'source.mp4'})
     target = store.create('Target', {'kind': 'upload', 'file': 'source.mp4'})

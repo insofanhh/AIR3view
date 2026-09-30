@@ -449,6 +449,11 @@ def get_preferences():
     return preferences.status()
 
 
+@app.patch('/api/preferences/connection')
+def save_connection_preferences(body: dict[str, str]):
+    return preferences.save_connection(body)
+
+
 @app.get('/api/youtube/auth')
 def youtube_auth_status():
     return youtube_auth.status()
@@ -471,7 +476,9 @@ def batch_defaults():
     if projects:
         project = projects[0]
         saved = preferences.status()['settings']
-        return {'settings': {**project['settings'], 'title': '',
+        return {'settings': {**project['settings'],
+                             **{key: saved[key] for key in preferences.CONNECTION_FIELDS if key in saved},
+                             'title': '',
                              'export_directory': saved.get('export_directory', ''),
                              'export_drive': saved.get('export_drive', '')},
                 'source_project_id': project['id']}
@@ -526,10 +533,10 @@ def batch_excel_template():
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = 'Videos'
-    sheet.append(['url', 'title', 'summary_minutes', 'editorial_mode', 'hook_enabled',
+    sheet.append(['url', 'title', 'summary_minutes', 'editorial_mode', 'hook_enabled', 'hook_duration',
                   'export_mode', 'export_part_count'])
     sheet.append(['https://www.youtube.com/watch?v=EXiQCyqxmSE', 'Video mẫu', 3,
-                  'reaction_cops', False, 'single', 2])
+                  'reaction_cops', False, None, 'single', 2])
     stream = BytesIO()
     workbook.save(stream)
     stream.seek(0)
@@ -540,6 +547,11 @@ def batch_excel_template():
 @app.get('/api/batches')
 def list_batches():
     return batches.list_batches()
+
+
+@app.get('/api/batches/overview')
+def list_batch_overview():
+    return batches.list_batch_overview()
 
 
 @app.post('/api/batches')
@@ -705,6 +717,11 @@ def timeline(pid: str):
 @app.get('/api/projects/{pid}/jobs')
 def project_jobs(pid: str):
     return store.jobs(pid)
+
+
+@app.get('/api/projects/{pid}/status')
+def project_status(pid: str):
+    return store.project_status(pid)
 
 
 @app.post('/api/projects/{pid}/jobs')

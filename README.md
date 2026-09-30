@@ -14,6 +14,17 @@ Từ bản có chức năng kiểm tra cập nhật, AIR3view tự kiểm tra Gi
 
 ## Tính năng
 
+### Cập nhật v0.1.13
+
+- Mở đầy đủ **Kết nối & cài đặt** trong modal từ thư viện hoặc màn hình sản xuất hàng loạt; trong dự án vẫn chuyển đến tab Kết nối. Nút **Lưu cài đặt** nằm ở góc dưới bên phải, luôn hiển thị khi cuộn; cấu hình kết nối mặc định được lưu trên máy.
+- Giảm request nền: lấy tiến trình khoảng mỗi 2 giây khi chạy, mỗi 30 giây khi nghỉ, dừng khi tab bị ẩn và tải lại khi quay về. Chỉ tải chi tiết dự án khi có thay đổi và chi tiết lô đang chọn.
+- Trong mỗi lô, video lỗi được chạy lại hết số lượt đã cài đặt trước khi chuyển sang video tiếp theo; các lô khác vẫn có thể xử lý đồng thời trong giới hạn worker.
+- Khi bật hook, có thể để AI chọn thời lượng hoặc chọn cố định 3–7 giây trong cả dự án đơn và lô. Giữ tiêu chí chọn cảnh và tiếng thật đã xác minh, tránh cắt ngang lời nhân vật.
+
+Kiểm tra bản phát hành: build frontend, kiểm tra bố cục modal trên màn hình lớn/nhỏ, kiểm thử backend; bộ cài EXE được đóng gói và smoke-test bằng GitHub Actions.
+
+### Các tính năng chính
+
 - **Một video hoàn chỉnh:** AI chọn cảnh từ toàn bộ nguồn và giữ diễn biến chính. Tại bước xuất, có thể giữ một tệp hoặc chia đều bản dựng hoàn chỉnh thành nhiều phần mà không lập lại kịch bản.
 - Lời dẫn có **Mở đầu → Diễn biến → Kết thúc**. Mở đầu phát sau hook và một đoạn hình gốc; kết thúc nêu kết quả và bài học.
 - **Reaction COPS** là chế độ riêng trong “Cách xuất video”: tối ưu cue nguồn có ánh xạ, chỉ dùng hội thoại hiện trường đã xác minh để chọn cảnh và viết các điểm COMMENTARY, không tạo intro/outro. Trong tab Giọng, **Số commentary** thay thanh tỷ lệ thoại gốc; chọn 1–10 điểm (mặc định 5). Nếu nguồn không đủ bước ngoặt riêng có chứng cứ, tool dùng ít điểm hơn và cảnh báo thay vì thêm lời bình yếu. Hook mặc định tắt; khi bật chỉ nhận cảnh 3–7 giây có tiếng thật phù hợp, không thay bằng lời hook AI. Nếu thiếu bằng chứng hiện trường, tác vụ báo `not_enough_evidence` thay vì lấy lời dẫn hậu kỳ để bù. Quy tắc gốc: [Reaction COPS master prompt](docs/reaction_cops_commentary_only_master_upgraded.md).

@@ -141,6 +141,25 @@ def jobs(pid):
         return [dict(x) for x in db.execute('SELECT * FROM jobs WHERE project_id=? ORDER BY created DESC LIMIT 20', (pid,))]
 
 
+def project_status(pid):
+    """Small polling payload; the full project is fetched only after it changes."""
+    with conn() as db:
+        row = db.execute('SELECT updated FROM projects WHERE id=?', (pid,)).fetchone()
+        if not row:
+            raise KeyError(pid)
+        recent_jobs = [dict(x) for x in db.execute(
+            'SELECT * FROM jobs WHERE project_id=? ORDER BY created DESC LIMIT 20', (pid,))]
+    preview_version = None
+    try:
+        stat = (project_dir(pid) / 'proxy.mp4').stat()
+        if stat.st_size:
+            preview_version = f'{stat.st_mtime_ns}-{stat.st_size}'
+    except FileNotFoundError:
+        pass
+    return {'updated': row['updated'], 'preview_version': preview_version,
+            'jobs': recent_jobs}
+
+
 def busy(pid):
     if any(j['state'] in ('queued', 'running') for j in jobs(pid)):
         return True
