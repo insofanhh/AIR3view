@@ -57,7 +57,10 @@ def pipeline_retryable_error(error):
 def retryable_error(error):
     message = str(error).lower()
     if any(x in message for x in ('request too large', 'insufficient_quota', 'billing_hard_limit',
-                                  'invalid api key', 'unauthorized', 'forbidden')):
+                                  'invalid api key', 'unauthorized', 'forbidden',
+                                  'sign in to confirm you', 'xác minh phiên tải',
+                                  'không đọc được cookie trình duyệt', 'thiếu cookies.txt',
+                                  'winerror 10013', 'không được phép kết nối ra youtube')):
         return False
     if 'requested' in message and 'limit' in message and 'tokens per min' in message:
         return False

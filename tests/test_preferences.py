@@ -133,6 +133,21 @@ def test_rejected_edits_do_not_change_preferences(client):
     assert client.get('/api/preferences').json()['settings']['language'] == 'French'
 
 
+def test_recent_export_destination_survives_unrelated_project_edits(client, tmp_path):
+    from backend import preferences
+    chosen = tmp_path / 'Exports'
+    chosen.mkdir()
+    preferences.remember_export_destination(str(chosen))
+    source = store.create('Old project', {'kind': 'upload', 'file': 'source.mp4'})
+    source['settings']['export_directory'] = ''
+    source = store.save(source)
+    body = edit_payload(source)
+    body['settings']['language'] = 'English'
+    assert client.put(f"/api/projects/{source['id']}", json=body, headers=HEADERS).status_code == 200
+    assert client.get('/api/export/storage').json()['recent'] == str(chosen)
+    assert store.create('Future project', {'kind': 'upload', 'file': 'source.mp4'})['settings']['export_directory'] == str(chosen)
+
+
 def test_reference_upload_is_durable_and_copied_into_each_project(client):
     source = store.create('Voice source', {'kind': 'upload', 'file': 'source.mp4'})
     target = store.create('Voice target', {'kind': 'upload', 'file': 'source.mp4'})

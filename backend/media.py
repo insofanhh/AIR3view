@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from functools import lru_cache
 from pathlib import Path
 import av
-from . import store
+from . import store, youtube_auth
 
 FFMPEG = os.environ.get('FFMPEG_PATH') or shutil.which('ffmpeg') or 'ffmpeg'
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
@@ -100,13 +100,22 @@ def prepare(project, report, check):
             if total:
                 report(min(25, 3 + 22 * event.get('downloaded_bytes', 0) / total), 'Đang tải video…')
         options = {'outtmpl': str(folder / 'source.%(ext)s'), 'format': 'bv*[height<=1080]+ba/b[height<=1080]/b', 'merge_output_format': 'mp4', 'noplaylist': True, 'quiet': True, 'ffmpeg_location': FFMPEG, 'progress_hooks': [progress], 'socket_timeout': 30, 'retries': 3}
-        with YoutubeDL(options) as downloader:
-            info = downloader.extract_info(source['url'], download=True)
-            candidates = [p for p in folder.glob('source.*') if p.suffix.lower() in ('.mp4', '.mkv', '.webm', '.mov')]
-            if not candidates:
-                raise RuntimeError('Không tìm thấy file video đã tải.')
-            source['file'] = max(candidates, key=lambda p: p.stat().st_size).name
-            project['name'] = str(info.get('title') or project['name'])[:180]
+        options.update(youtube_auth.options())
+        options.update(youtube_auth.runtime_options())
+        try:
+            with YoutubeDL(options) as downloader:
+                info = downloader.extract_info(source['url'], download=True)
+        except Exception as exc:
+            friendly = youtube_auth.friendly_error(exc)
+            if friendly:
+                raise RuntimeError(friendly) from None
+            raise
+        candidates = [p for p in folder.glob('source.*') if p.suffix.lower() in ('.mp4', '.mkv', '.webm', '.mov')]
+        if not candidates:
+            raise RuntimeError('Không tìm thấy file video đã tải.')
+        source['file'] = max(candidates, key=lambda p: p.stat().st_size).name
+        project['source_title'] = str(info.get('title') or project.get('source_title') or project['name'])[:180]
+        project['name'] = project['source_title']
         store.save(project)
     path = store.asset(project['id'], source['file'])
     metadata = probe(path)
@@ -467,7 +476,8 @@ def try_source_subtitles(project, report=lambda *_: None, check=lambda: None):
     source = project.get('source') or {}
     if source.get('kind') != 'youtube' or not source.get('url'):
         return False
-    marker = {'version': SOURCE_SUBTITLES_VERSION, 'url': source['url']}
+    marker = {'version': SOURCE_SUBTITLES_VERSION, 'url': source['url'],
+              'auth_revision': youtube_auth.revision()}
     if project.get('source_subtitles_check') == marker:
         return False
 
@@ -480,6 +490,8 @@ def try_source_subtitles(project, report=lambda *_: None, check=lambda: None):
         check()
         inspect_options = {'skip_download': True, 'noplaylist': True, 'quiet': True,
                            'socket_timeout': 15, 'retries': 1}
+        inspect_options.update(youtube_auth.options())
+        inspect_options.update(youtube_auth.runtime_options())
         with YoutubeDL(inspect_options) as downloader:
             info = downloader.extract_info(source['url'], download=False) or {}
         check()
@@ -502,6 +514,8 @@ def try_source_subtitles(project, report=lambda *_: None, check=lambda: None):
                    'outtmpl': str(folder / 'source-captions.%(ext)s'), 'noplaylist': True,
                    'quiet': True, 'socket_timeout': 15, 'retries': 1,
                    'ffmpeg_location': FFMPEG}
+        options.update(youtube_auth.options())
+        options.update(youtube_auth.runtime_options())
         with YoutubeDL(options) as downloader:
             downloader.extract_info(source['url'], download=True)
         check()

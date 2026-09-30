@@ -95,7 +95,11 @@ def build_legacy(project, strict=False):
                 ranges = next_ranges
             for left, right in ranges:
                 if right - left >= .08:
-                    cues.append({**cue, 'start': left, 'end': right, 'speaker': 'original', 'words': shifted_words(cue, item['start'] - item['source_start'])})
+                    full_start = item['start'] + cue['start'] - item['source_start']
+                    full_end = item['start'] + cue['end'] - item['source_start']
+                    cues.append({**cue, 'start': left, 'end': right, 'caption_start': full_start,
+                                 'caption_end': full_end, 'speaker': 'original',
+                                 'words': shifted_words(cue, item['start'] - item['source_start'])})
     cues.sort(key=lambda c: (c['start'], c['end']))
     parts = split_parts(cursor, settings, cues, voices)
     for part in parts[:-1]:
@@ -213,7 +217,10 @@ def build_story(project, strict=False):
             a,b=max(cue['start'],clip['source_start']),min(cue['end'],clip['source_end'])
             if b>a:
                 offset=clip['start']-clip['source_start']
-                mapped_cues.append({**cue,'start':a+offset,'end':b+offset,'words':shifted_words(cue,offset)})
+                mapped_cues.append({**cue,'start':a+offset,'end':b+offset,
+                                    'caption_start':cue['start']+offset,
+                                    'caption_end':cue['end']+offset,
+                                    'words':shifted_words(cue,offset)})
     for n in project['narrations']:
         if not n['enabled'] or not n['text'].strip(): continue
         candidates=[c for c in clips if (c['kind']!='hook' or n.get('segment_id')=='hook') and c['source_start']<=n['start']<c['source_end']]
@@ -248,10 +255,17 @@ def build_story(project, strict=False):
         result['source_mutes'] = source_mutes
         from .retention import budget as retention_budget
         result['retention']=retention_budget(plan,project)
-        planned_ai_ratio = sum(c['end']-c['start'] for c in clips
-                               if (bool(plan['hook'].get('narration')) if c['kind']=='hook' else bool(selections[c['segment_id']]['narration'].strip())))/cursor
-        if strict and ai_ratio < planned_ai_ratio-.02:
-            raise ValueError(f'Lời AI mới phủ {ai_ratio:.0%} video. Cần tạo đủ lời kể theo thời lượng cảnh trước khi xuất.')
+        # Reaction COPS is commentary-point driven: a point is valid when it
+        # has admissible evidence and its narration fits its own scene. It is
+        # intentionally allowed to leave natural source-audio gaps, so a
+        # whole-video AI coverage threshold would reject valid plans merely
+        # because their WAV is shorter than the selected footage. Storytelling
+        # mode keeps the stricter scene-coverage contract.
+        if settings.get('editorial_mode') != 'reaction_cops':
+            planned_ai_ratio = sum(c['end']-c['start'] for c in clips
+                                   if (bool(plan['hook'].get('narration')) if c['kind']=='hook' else bool(selections[c['segment_id']]['narration'].strip())))/cursor
+            if strict and ai_ratio < planned_ai_ratio-.02:
+                raise ValueError(f'Lời AI mới phủ {ai_ratio:.0%} video. Cần tạo đủ lời kể theo thời lượng cảnh trước khi xuất.')
     result['warnings']=list(dict.fromkeys(warnings+[w for w in result['warnings'] if not w.startswith('Ranh giới phần')]))
     for part in parts[:-1]:
         if any(v['start']<part['end']<v['end'] for v in result['voices']):

@@ -98,6 +98,9 @@ def test_batch_export_creates_one_folder_and_supports_parts(tmp_path, monkeypatc
     assert all(len(list(folder.glob('*.mp4'))) == 2 for folder in folders)
     assert all(len(list(folder.glob('*.srt'))) == 2 for folder in folders)
     assert all(len(list(folder.glob('*.ass'))) == 2 for folder in folders)
+    from backend import preferences
+    assert preferences.status()['settings']['export_directory'] == str(destination)
+    assert store.create('Next batch source', {'kind': 'upload', 'file': 'source.mp4'})['settings']['export_directory'] == str(destination)
 
 
 def test_single_project_export_uses_selected_storage_and_name(tmp_path, monkeypatch):
@@ -124,6 +127,9 @@ def test_single_project_export_uses_selected_storage_and_name(tmp_path, monkeypa
     assert folder.parent == destination
     assert folder.name.startswith('Final_Story_')
     assert (folder / 'part-001.mp4').is_file()
+    from backend import preferences
+    assert preferences.status()['settings']['export_directory'] == str(destination)
+    assert store.create('Next project', {'kind': 'upload', 'file': 'source.mp4'})['settings']['export_directory'] == str(destination)
 
 
 def test_selected_directory_is_used_for_single_and_batch_exports(tmp_path, monkeypatch):

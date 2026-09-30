@@ -109,7 +109,7 @@ def ass_color(hex_color):
 
 
 def caption_events(cue, settings, part):
-    r"""Full-cue events with only the currently spoken word colored.
+    r"""Full-cue events with only the currently spoken AI word colored.
 
     Use absolute word timestamps, including gaps, rather than progressive \k
     tags (which would leave previous words highlighted and drift after splits).
@@ -122,10 +122,21 @@ def caption_events(cue, settings, part):
     chunks = re.split(r'(\\N|\s+)', body)
     tokens = [i for i, token in enumerate(chunks) if token and token != r'\N' and not token.isspace()]
     words = cue.get('words', [])
-    # Editing/translation may invalidate old timing data; never highlight the
-    # wrong token. Cues without reliable words remain readable plain captions.
+    # AI captions can be split when the timeline is divided. Their words
+    # retain absolute output timestamps, so some words can fall outside this
+    # visible fragment. Validate text and ordering, not fragment containment.
     valid = bool(words) and ' '.join(w['text'] for w in words).split() == cue['text'].split() and len(words) == len(tokens)
-    active = settings.get('subtitle_highlight', True) and valid
+    if valid:
+        try:
+            valid = all(float(w['end']) >= float(w['start']) for w in words)
+            valid = valid and all(float(a['end']) <= float(b['start']) + .001 for a,b in zip(words, words[1:]))
+        except (KeyError, TypeError, ValueError):
+            valid = False
+    # Source dialogue is intentionally plain. Its ASR/SRT word anchors are
+    # sentence evidence, not a reliable karaoke clock, especially where the
+    # speaker pauses or overlaps another person. Only AIR3view narration gets
+    # word-by-word highlighting.
+    active = settings.get('subtitle_highlight', True) and valid and cue.get('speaker') == 'ai'
     boundaries = {start, end}
     if active:
         boundaries.update(max(start,min(end,w[k])) for w in words for k in ('start','end'))
@@ -172,9 +183,11 @@ def display_cues(cues, start, end):
         if visible and visible[-1]['id'] == chosen.get('id') and abs(visible[-1]['end']-left)<.001:
             visible[-1]['end'] = right
         else:
+            # Keep absolute word anchors even when this visible row is only a
+            # fragment of the original cue. caption_events clips the anchors
+            # to the fragment while preserving the current-word highlight.
             visible.append({**chosen, 'start': left, 'end': right,
-                            'words': chosen.get('words', []) if left <= chosen['start']+.001
-                                     and right >= chosen['end']-.001 else []})
+                            'words': list(chosen.get('words', []))})
     return visible
 
 

@@ -83,7 +83,10 @@ def _project_reference(project, strict=False):
 
 
 def _write(settings, reference, source_project_id):
-    body = {'version': 1, 'settings': _shared(settings, bool(reference)), 'reference': reference}
+    shared = _shared(settings, bool(reference))
+    body = {'version': 1, 'settings': shared, 'reference': reference,
+            'export_destination': {'export_directory': shared['export_directory'],
+                                   'export_drive': shared['export_drive']}}
     updated = time.time()
     with store.conn() as db:
         db.execute(
@@ -129,10 +132,14 @@ def save_project(project):
     """Atomically save an explicit user edit and promote its reusable fields."""
     with store.LOCK:
         reference = _project_reference(project, strict=True)
+        previous = current()
         body = {
             'version': 1,
             'settings': _shared(project['settings'], bool(reference)),
             'reference': reference,
+            'export_destination': previous.get('export_destination', {
+                'export_directory': previous['settings'].get('export_directory', ''),
+                'export_drive': previous['settings'].get('export_drive', '')}),
         }
         updated = time.time()
         project['updated'] = updated
@@ -176,6 +183,7 @@ def settings_for_project(pid, base_settings):
     for key, value in preference.get('settings', {}).items():
         if key in SHARED_FIELDS:
             result[key] = value
+    result.update(preference.get('export_destination') or {})
     result[REFERENCE_FIELD] = _copy_reference(pid, preference.get('reference'))
     return Settings(**result).model_dump()
 
@@ -216,6 +224,7 @@ def status():
     path = _reference_path(reference.get('file')) if reference else None
     has_reference = bool(path and path.is_file())
     settings = dict(preference.get('settings', {}))
+    settings.update(preference.get('export_destination') or {})
     settings[REFERENCE_FIELD] = has_reference
     return {
         'initialized': True,
@@ -224,3 +233,20 @@ def status():
         'has_voice_reference': has_reference,
         'settings': settings,
     }
+
+
+def remember_export_destination(directory='', drive=''):
+    """Persist the last explicitly submitted export folder independently of project edits."""
+    destination = Settings.model_validate({'export_directory': directory,
+                                           'export_drive': drive})
+    current()
+    with store.LOCK, store.conn() as db:
+        row = db.execute('SELECT body FROM preferences WHERE key=?', (PREFERENCE_KEY,)).fetchone()
+        body = json.loads(row['body'])
+        body['export_destination'] = {
+            'export_directory': destination.export_directory,
+            'export_drive': destination.export_drive,
+        }
+        db.execute('UPDATE preferences SET body=?, updated=? WHERE key=?',
+                   (json.dumps(body, ensure_ascii=False), time.time(), PREFERENCE_KEY))
+    return body['export_destination']

@@ -16,6 +16,24 @@ if (-not (Test-Path -LiteralPath '.venv\Scripts\python.exe')) {
 if ($LASTEXITCODE -ne 0) { throw 'Failed to update pip.' }
 & '.\.venv\Scripts\python.exe' -m pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) { throw 'Failed to install Python dependencies.' }
+$dataRoot = if ($env:AIR3VIEW_DATA) { $env:AIR3VIEW_DATA } else { Join-Path $PSScriptRoot 'data' }
+$runtimeDir = Join-Path $dataRoot '_runtime'
+$localDeno = Join-Path $runtimeDir 'deno.exe'
+$nodeMajor = [int]((& node --version).TrimStart('v').Split('.')[0])
+if ($nodeMajor -lt 22 -and -not (Get-Command deno -ErrorAction SilentlyContinue) -and -not (Test-Path -LiteralPath $localDeno)) {
+    New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
+    $archive = Join-Path $runtimeDir 'deno.zip'
+    try {
+        Invoke-WebRequest -Uri 'https://github.com/denoland/deno/releases/download/v2.9.7/deno-x86_64-pc-windows-msvc.zip' -OutFile $archive
+        Expand-Archive -LiteralPath $archive -DestinationPath $runtimeDir -Force
+    } finally {
+        Remove-Item -LiteralPath $archive -ErrorAction SilentlyContinue
+    }
+}
+if (Test-Path -LiteralPath $localDeno) {
+    & $localDeno --version | Select-Object -First 1
+    if ($LASTEXITCODE -ne 0) { throw 'Deno installed for YouTube is not working.' }
+}
 npm.cmd --prefix frontend ci
 if ($LASTEXITCODE -ne 0) { throw 'Failed to install frontend dependencies.' }
 npm.cmd --prefix frontend run build

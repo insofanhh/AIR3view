@@ -6,7 +6,7 @@ from backend.alignment import align_script
 from backend.captions import align_existing
 from backend.timeline import build
 from backend.providers import voice_hash
-from backend.render import caption_events, write_subtitles, render_part
+from backend.render import caption_events, display_cues, write_subtitles, render_part
 from backend.media import FFMPEG, run, probe
 from backend import store
 
@@ -27,7 +27,7 @@ def test_alignment_retains_word_anchors_and_model_roundtrip():
 def test_only_current_word_colored_and_silence_plain():
     settings = Settings().model_dump()
     settings['subtitle_highlight_color']='#ff0000'
-    events = caption_events(cue(), settings, {'start':0,'end':5})
+    events = caption_events({**cue(), 'speaker':'ai'}, settings, {'start':0,'end':5})
     assert len(events)==3
     assert r'{\1c&H000000ff}Hello' in events[0]
     assert r'\1c' not in events[1]
@@ -36,11 +36,29 @@ def test_only_current_word_colored_and_silence_plain():
 
 
 def test_split_keeps_word_active_without_restarting_sentence():
-    events = caption_events(cue(),Settings().model_dump(),{'start':1.5,'end':3.5})
+    events = caption_events({**cue(), 'speaker':'ai'},Settings().model_dump(),{'start':1.5,'end':3.5})
     assert '0:00:00.00,0:00:00.50' in events[0]
     assert '0:00:01.50,0:00:02.00' in events[-1]
     assert r'}Hello{\1c' in events[0]
     assert r'}world{\1c' in events[-1]
+
+
+def test_original_dialogue_stays_plain_when_split_by_ai():
+    settings = Settings().model_dump()
+    cue_with_words = cue()
+    visible = display_cues([
+        {**cue_with_words, 'start': 1, 'end': 2, 'caption_start': 1, 'caption_end': 4},
+        {**cue_with_words, 'start': 3, 'end': 4, 'caption_start': 1, 'caption_end': 4},
+    ], 0, 5)
+    events = [e for row in visible for e in caption_events(row, settings, {'start': 0, 'end': 5})]
+    assert all(r'\1c' not in e for e in events)
+
+
+def test_original_caption_without_word_anchors_stays_plain():
+    c = {'id': 'source', 'start': 0, 'end': 4, 'text': 'Hello world', 'speaker': 'original',
+         'caption_start': 0, 'caption_end': 4, 'words': []}
+    events = caption_events(c, Settings().model_dump(), {'start': 0, 'end': 4})
+    assert all(r'\1c' not in e for e in events)
 
 
 def test_edited_or_unaligned_text_does_not_highlight_wrong_words():
@@ -94,14 +112,13 @@ def test_real_render_highlight_moves_and_disappears_in_pause(tmp_path,monkeypatc
         mask=(f[:,:,0]>120)&(f[:,:,0]>f[:,:,1]*1.8)&(f[:,:,0]>f[:,:,2]*1.8)
         return np.where(mask)[1]
     first,pause,second=[pixels(samples[t]) for t in (45,75,105)]
-    assert len(first)>20 and len(second)>20 and len(pause)==0
-    assert first.mean()<second.mean()
+    assert len(first)==0 and len(second)==0 and len(pause)==0
 
 
 def test_highlight_keeps_line_breaks_and_escapes_text():
     text = 'First extraordinarily lengthy sentence with more wonderful words at the end'
     tokens = text.split()
-    c = {'start':0,'end':len(tokens),'text':text,'words':[{'text':w,'start':i,'end':i+1} for i,w in enumerate(tokens)]}
+    c = {'start':0,'end':len(tokens),'text':text,'speaker':'ai','words':[{'text':w,'start':i,'end':i+1} for i,w in enumerate(tokens)]}
     events = caption_events(c,Settings().model_dump(),{'start':0,'end':len(tokens)})
     assert len(events)==len(tokens)
     assert all(r'\N' in event for event in events)

@@ -50,6 +50,9 @@ def init():
             project = json.loads(row['body'])
             settings = project.setdefault('settings', {})
             tts_changed = False
+            if not project.get('source_title'):
+                project['source_title'] = str(project.get('name') or '').strip()[:180]
+                tts_changed = True
             if 'tts_provider' not in settings:
                 settings['tts_provider'] = 'vieneu'
                 tts_changed = True
@@ -117,7 +120,7 @@ def create(name, source):
     from . import preferences
     settings = preferences.settings_for_project(pid, settings)
     settings.update(output_mode='single', production_workflow='plan_first', duration_min_ratio=.9)
-    return save({'id': pid, 'name': name, 'source': source, 'created': time.time(), 'playback_version': 2, 'settings': settings, 'metadata': {}, 'scenes': [], 'frames': [], 'transcript': [], 'narrations': [], 'hooks': [], 'summary': '', 'exports': [], 'warnings': [], 'revision': 0})
+    return save({'id': pid, 'name': name, 'source_title': name, 'source': source, 'created': time.time(), 'playback_version': 2, 'settings': settings, 'metadata': {}, 'scenes': [], 'frames': [], 'transcript': [], 'narrations': [], 'hooks': [], 'summary': '', 'exports': [], 'warnings': [], 'revision': 0})
 
 
 def list_projects():

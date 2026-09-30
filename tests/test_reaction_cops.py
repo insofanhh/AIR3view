@@ -5,7 +5,8 @@ import pytest
 
 from backend.models import Settings
 from backend.reaction_cops import (_planner_catalog, _clean_footage, _effective_duration,
-                                   _fill_from_full_source, optimize_cues, validate_plan)
+                                   _fill_from_full_source, optimize_cues, validate_plan,
+                                   validated_output_title)
 from backend.timeline import build_story
 from backend.voice_repair import source_evidence
 
@@ -38,6 +39,25 @@ def fixture():
     return project,plan
 
 
+def test_reaction_title_is_rewritten_without_losing_source_claims():
+    source = 'Police Stop The Wrong Shoplifter… Then He Made Things 20X Worse'
+    candidate = 'Officers Detain the Wrong Shoplifting Suspect, and His Reaction Escalates Everything 20X'
+    result = validated_output_title(source, candidate, 'English')
+    assert result == candidate
+    assert result != source
+
+
+def test_reaction_title_falls_back_when_ai_copies_or_returns_plan_label():
+    source = 'Police Stop The Wrong Shoplifter… Then He Made Things 20X Worse'
+    copied = validated_output_title(source, source, 'English')
+    technical = validated_output_title(source, 'Reaction COPS Footage Plan v2', 'English')
+    assert copied != source
+    assert technical != source
+    assert '20X' in copied and '20X' in technical
+    assert copied.startswith('What Really Happened When:')
+    assert validated_output_title(source, 'Police Detain the Wrong Shoplifter, Then He Makes Everything 20X Worse', 'English') != 'Police Detain the Wrong Shoplifter, Then He Makes Everything 20X Worse'
+
+
 def test_no_hook_has_no_phantom_clip_or_intro_outro():
     project,plan=fixture()
     accepted=validate_plan(plan,project,check_text=False)
@@ -46,6 +66,30 @@ def test_no_hook_has_no_phantom_clip_or_intro_outro():
     assert timeline['duration']==30
     assert all(c['kind']!='hook' for c in timeline['clips'])
     assert len([s for s in accepted['selections'] if s['narration']])==2
+
+
+def test_reaction_cops_does_not_require_whole_video_ai_coverage(monkeypatch):
+    project, plan = fixture()
+    project['settings']['narration_style'] = 'storytelling'
+    for index, item in enumerate(plan['selections']):
+        item['id'] = f's{index}'
+    project['story_plan'] = plan
+    monkeypatch.setattr('backend.plan_first.contract_check', lambda *_: None)
+    monkeypatch.setattr('backend.story.validate_narration_budget', lambda *_args, **_kwargs: None)
+    from backend.providers import voice_hash
+    project['narrations'] = []
+    for item in plan['selections']:
+        if not item['narration']:
+            continue
+        narration = dict(id='story-' + str(item['start']), segment_id=item['id'],
+                         start=item['start'], text=item['narration'], enabled=True,
+                         audio='voice.wav', audio_hash='', duration=.1,
+                         target_duration=item['end'] - item['start'] - .04,
+                         cues=[], caption_version=4)
+        narration['audio_hash'] = voice_hash(narration, project['settings'])
+        project['narrations'].append(narration)
+    timeline = build_story(project, strict=True)
+    assert timeline['narration_mix']['ai_ratio'] < .02
 
 
 def test_source_narrator_cannot_support_commentary():
@@ -197,6 +241,8 @@ def test_reaction_plan_first_pipeline_keeps_hook_off_and_only_eligible_cues(monk
                     'selections':[{'start':i*10,'end':(i+1)*10,'part':1,'section':'development',
                                    'reason':'confirmed exchange','priority':.8,'source_cue_ids':[str(i)],
                                    'keep_original':i==1} for i in range(3)]}
+        if schema.__name__=='ReactionTitle':
+            return {'title':'Confirmed on-scene exchanges'}
         if schema.__name__=='ScheduledNarration':
             rows=json.loads(prompt.split('\nREQUESTED SLOTS: ',1)[1].split('\nACCEPTED',1)[0])
             return {'items':[{'id':row['id'],'text':' '.join(['diễn biến']*36)} for row in rows]}
@@ -341,6 +387,8 @@ def test_reaction_pipeline_repairs_underfilled_ai_draft_from_full_source(monkeyp
                              for c in rows]}
         if schema.__name__=='ReactionFootagePlan':
             return _short_ai_draft()
+        if schema.__name__=='ReactionTitle':
+            return {'title':'Confirmed on-scene exchanges'}
         if schema.__name__=='ScheduledNarration':
             rows=json.loads(prompt.split('\nREQUESTED SLOTS: ',1)[1].split('\nACCEPTED',1)[0])
             return {'items':[{'id':c['id'],'text':'Cảnh '*c['min_words']} for c in rows]}
@@ -381,6 +429,8 @@ def test_token_limited_planner_uses_verified_full_source(monkeypatch,tmp_path):
                              for c in rows]}
         if schema.__name__=='ReactionFootagePlan':
             raise providers.OpenAIRequestTooLarge(10000,11977)
+        if schema.__name__=='ReactionTitle':
+            return {'title':'Confirmed on-scene exchanges'}
         if schema.__name__=='ScheduledNarration':
             rows=json.loads(prompt.split('\nREQUESTED SLOTS: ',1)[1].split('\nACCEPTED',1)[0])
             return {'items':[{'id':c['id'],'text':'Cảnh '*c['min_words']} for c in rows]}

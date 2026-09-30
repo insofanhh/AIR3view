@@ -17,7 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
-from . import store, providers, preferences, updates, batches, export_files
+from . import store, providers, preferences, updates, batches, export_files, youtube_auth
 from .models import Model, ProjectEdit, Settings
 from pydantic import Field
 from .media import prepare, transcribe, parse_srt, Cancelled, FFMPEG
@@ -266,6 +266,10 @@ class KeyInput(Model):
     api_key: str
 
 
+class YouTubeAuthInput(Model):
+    mode: Literal['none', 'chrome', 'edge', 'file']
+
+
 class GeminiCheckInput(Model):
     model: str
 
@@ -303,6 +307,11 @@ def queue_job(pid, kind, options=None):
         if not plan_is_current(project):
             raise ValueError('Cấu hình đầu ra đã thay đổi. Phân tích AI lại trước khi tạo giọng để đọc đúng kịch bản mới.')
     jid = store.new_job(pid, kind,options)
+    if kind == 'export' and not (options or {}).get('batch_id'):
+        destination = options or {}
+        preferences.remember_export_destination(
+            destination.get('export_directory', project['settings'].get('export_directory', '')),
+            destination.get('export_drive', project['settings'].get('export_drive', '')))
     QUEUE.put(jid)
     return store.job(jid)
 
@@ -319,7 +328,10 @@ def health():
 
 @app.get('/api/export/storage')
 def export_storage():
-    return export_files.storage_options()
+    settings = preferences.status()['settings']
+    return {**export_files.storage_options(),
+            'recent': settings.get('export_directory', ''),
+            'recent_drive': settings.get('export_drive', '')}
 
 
 @app.post('/api/export/pick-directory')
@@ -437,12 +449,32 @@ def get_preferences():
     return preferences.status()
 
 
+@app.get('/api/youtube/auth')
+def youtube_auth_status():
+    return youtube_auth.status()
+
+
+@app.put('/api/youtube/auth')
+def set_youtube_auth(body: YouTubeAuthInput):
+    return youtube_auth.set_mode(body.mode)
+
+
+@app.post('/api/youtube/cookies')
+async def upload_youtube_cookies(file: UploadFile = File(...)):
+    content = await file.read(youtube_auth.MAX_COOKIE_BYTES + 1)
+    return youtube_auth.save_cookie_file(content)
+
+
 @app.get('/api/batches/defaults')
 def batch_defaults():
     projects = store.list_projects()
     if projects:
         project = projects[0]
-        return {'settings': {**project['settings'], 'title': ''}, 'source_project_id': project['id']}
+        saved = preferences.status()['settings']
+        return {'settings': {**project['settings'], 'title': '',
+                             'export_directory': saved.get('export_directory', ''),
+                             'export_drive': saved.get('export_drive', '')},
+                'source_project_id': project['id']}
     settings = Settings(output_mode='single', narration_style='storytelling', opening_delay=0,
                         production_workflow='plan_first', duration_min_ratio=.9).model_dump()
     settings.update(preferences.status()['settings'])
@@ -547,6 +579,7 @@ def export_batch(batch_id: str, body: BatchExportInput):
         with store.conn() as db:
             db.execute("UPDATE batch_items SET export_job_id=?,export_folder='' WHERE id=?",(job['id'],item['id']))
         jobs.append(job)
+    preferences.remember_export_destination(body.export_directory, body.export_drive)
     return {'jobs':jobs,'batch':batches.get(batch_id)}
 
 
