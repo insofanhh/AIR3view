@@ -22,3 +22,29 @@ def test_below_video_position_remains_top_anchored(tmp_path):
     ass=(tmp_path/'part-001.ass').read_text('utf-8-sig')
     style=next(line for line in ass.splitlines() if line.startswith('Style: Sub,')).split(',')
     assert int(style[18])==8 and int(style[21])==1480
+
+
+def test_news_slide_title_toggle_and_subtitle_gap(tmp_path):
+    base = Settings(layout_preset='news_slide', title='A new point of view',
+                    subtitle_position='below', subtitle_top_margin=500).model_dump()
+    part = {'index': 1, 'start': 0, 'end': 2, 'duration': 2}
+    timeline = {'cues': []}
+    write_subtitles(tmp_path, {'settings': base}, timeline, part)
+    ass = (tmp_path / 'part-001.ass').read_text('utf-8-sig')
+    style = next(line for line in ass.splitlines() if line.startswith('Style: Sub,')).split(',')
+    assert 'Style: Title,Georgia,' in ass
+    assert 'Style: Sub,Segoe UI,' in ass
+    assert layout(base)['top'] == 80
+    assert int(style[21]) == 1580
+    assert int(style[19]) == int(style[20]) == 130
+    assert r'\pos(130,1210)' in ass
+    assert 'A new point of view' in ass
+    assert 'Nguồn' not in ass and 'Ngày đăng' not in ass
+
+    hidden = {**base, 'show_title': False, 'subtitle_top_margin': 60}
+    write_subtitles(tmp_path, {'settings': hidden}, timeline, part)
+    ass = (tmp_path / 'part-001.ass').read_text('utf-8-sig')
+    style = next(line for line in ass.splitlines() if line.startswith('Style: Sub,')).split(',')
+    assert int(style[21]) == 1140
+    assert int(style[19]) == int(style[20]) == 130
+    assert 'A new point of view' not in ass

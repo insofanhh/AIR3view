@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from .models import Model
 
 
-VOICE_REPAIR_VERSION = 'measured-budget-fit-v7'
+VOICE_REPAIR_VERSION = 'measured-budget-fit-v8'
 
 
 class NarrationReply(Model):
@@ -141,11 +141,11 @@ def duration_is_acceptable(measured: float, target: float, tolerance: float = 0.
 
 
 def reaction_tail_gap(settings: dict, target: float) -> float:
-    """Allow a brief natural pause under original audio in Reaction COPS only."""
+    """Leave room for real scene audio instead of padding host prose to a slot."""
     if (settings.get('editorial_mode') != 'reaction_cops' or
             settings.get('production_workflow', 'plan_first') != 'plan_first' or target <= 0):
         return 0
-    return min(1.25, target * .2)
+    return min(1.25, target * .2) if target <= 8.5 else min(3.5, target * .25)
 
 
 def _budget_for(text: str, measured: float, target: float) -> tuple[int, int, int]:
@@ -261,7 +261,15 @@ def repair_text(text: str, evidence: str, language: str, target: float,
                 generation: int = 1, max_attempts: int = 2, history=None, measured_trial=False) -> str:
     """Ask the configured AI for one bounded rewrite and validate its shape."""
     if settings.get('editorial_mode') == 'reaction_cops':
-        from .reaction_cops import RULE, commentary_violation
+        from .reaction_cops import RULE, commentary_quality_issue
+        prefix = 'IN_SCENE EVIDENCE ONLY: '
+        try:
+            cited = json.loads(evidence[len(prefix):]) if evidence.startswith(prefix) else []
+        except ValueError:
+            cited = []
+        source_text = ' '.join(str(row.get('text', '')) for row in cited if isinstance(row, dict))
+        def commentary_violation(candidate):
+            return commentary_quality_issue(candidate, source_text, target, language)
     else:
         from .source_policy import RULE
         commentary_violation = lambda _text: None

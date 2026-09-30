@@ -237,11 +237,14 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
     bridge_mode=bridge_active(project)
     reaction = project['settings'].get('editorial_mode') == 'reaction_cops'
     if reaction:
-        from .reaction_cops import commentary_violation
-    def reaction_sentences(text, entry):
-        if not reaction or project['settings']['language'] != 'English' or entry['end']-entry['start'] < 8:
-            return True
-        return 1 <= len(re.findall(r'[^.!?]+[.!?]+', text)) <= 2
+        from .reaction_cops import commentary_quality_issue, commentary_source_text
+    def reaction_issue(text, entry):
+        if not reaction:
+            return None
+        seconds = entry['end'] - entry['start']
+        issue = commentary_quality_issue(text, commentary_source_text(project, entry['evidence']),
+                                           seconds, project['settings']['language'])
+        return issue
     from .scene_repair import repair as repair_scene_geometry
     if locked:
         result = validate_plan(raw, project, check_text=False)
@@ -284,7 +287,7 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
         'retention_policy_version':project.get('retention_policy_version',0),
         'story_bridge_version':project.get('story_bridge_version',0),
         'hook_policy_version':project.get('hook_policy_version',0),
-         'version': 3,
+         'version': 4,
         'editorial_mode': project['settings'].get('editorial_mode','standard'),
         'language': project['settings']['language'],
         'draft_rule': project['settings']['draft_rule'],
@@ -344,8 +347,7 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
             text = clean_narration(cached_text.strip()) if isinstance(cached_text, str) else ''
             units = speech_units(text)
             if (entry['min_words'] <= units <= entry['max_words'] and not wrong_language(text, project['settings']['language'])
-                    and (not reaction or not commentary_violation(text))
-                     and reaction_sentences(text, entry)
+                    and not reaction_issue(text, entry)
                     and (not bridge_mode or concise(text,project['settings']['language']))):
                 accepted[entry['id']] = text
 
@@ -424,10 +426,8 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
                     issues.append(f'ID {entry["id"]}: return it exactly once.')
                 elif wrong_language(text, project['settings']['language']):
                     issues.append(f'ID {entry["id"]}: write in English, not Vietnamese.')
-                elif reaction and commentary_violation(text):
-                    issues.append(f'ID {entry["id"]}: remove intro/outro, source narrator or timestamp/metadata wording.')
-                elif not reaction_sentences(text, entry):
-                    issues.append(f'ID {entry["id"]}: use one or two complete sentences.')
+                elif reaction_issue(text, entry):
+                    issues.append(f'ID {entry["id"]}: {reaction_issue(text, entry)}')
                 elif bridge_mode and not concise(text,project['settings']['language']):
                     issues.append(f'ID {entry["id"]}: use only 1–2 concise sentences, preserving the key facts; no detailed paragraph.')
                 elif entry['min_words'] <= units <= entry['max_words']:
@@ -447,8 +447,7 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
         if pending and all(len(returned.get(entry['id'], [])) == 1
                            and returned[entry['id']][0].strip()
                            and not wrong_language(returned[entry['id']][0], project['settings']['language'])
-                           and (not reaction or not commentary_violation(returned[entry['id']][0]))
-                            and reaction_sentences(returned[entry['id']][0], entry)
+                           and not reaction_issue(returned[entry['id']][0], entry)
                            and (not bridge_mode or concise(returned[entry['id']][0],project['settings']['language']))
                            for entry in pending):
             for entry in pending:

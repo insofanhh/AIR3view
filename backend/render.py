@@ -1,6 +1,7 @@
 import re
 import os
 import subprocess
+from pathlib import Path
 from PIL import ImageFont
 from . import store
 from .media import FFMPEG, run, probe, NO_WINDOW, filter_complex_file_args
@@ -84,8 +85,18 @@ def safe_text(text):
     return text.replace('\\', '／').replace('{', '（').replace('}', '）').replace('\r', '').replace('\n', r'\N')
 
 
-def wrap_caption(text, size, width=940, max_lines=2):
-    font_path = os.environ.get('AIR3VIEW_FONT', 'C:/Windows/Fonts/arialbd.ttf' if os.name == 'nt' else '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf')
+def news_font_path(kind):
+    if os.name == 'nt':
+        name = 'georgiab.ttf' if kind == 'title' else 'segoeuib.ttf'
+        candidate = Path('C:/Windows/Fonts') / name
+        if candidate.is_file():
+            return str(candidate)
+    name = 'DejaVuSerif-Bold.ttf' if kind == 'title' else 'DejaVuSans-Bold.ttf'
+    return '/usr/share/fonts/truetype/dejavu/' + name
+
+
+def wrap_caption(text, size, width=940, max_lines=2, font_path=None):
+    font_path = font_path or os.environ.get('AIR3VIEW_FONT', 'C:/Windows/Fonts/arialbd.ttf' if os.name == 'nt' else '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf')
     for actual in range(size, 19, -2):
         try:
             font = ImageFont.truetype(font_path, actual)
@@ -117,7 +128,10 @@ def caption_events(cue, settings, part):
     start, end = max(cue['start'], part['start']), min(cue['end'], part['end'])
     if end <= start:
         return []
-    wrapped = wrap_caption(cue['text'], settings['subtitle_size'])
+    caption_width = 820 if settings.get('layout_preset') == 'news_slide' else 940
+    subtitle_font = news_font_path('subtitle') if settings.get('layout_preset') == 'news_slide' else None
+    wrapped = wrap_caption(cue['text'], settings['subtitle_size'], width=caption_width,
+                           font_path=subtitle_font)
     prefix, body = wrapped.split('}', 1)
     chunks = re.split(r'(\\N|\s+)', body)
     tokens = [i for i, token in enumerate(chunks) if token and token != r'\N' and not token.isspace()]
@@ -161,9 +175,19 @@ def caption_events(cue, settings, part):
 
 def layout(settings):
     inset = settings.get('subtitle_bottom_margin', 10)
+    preset = settings.get('layout_preset')
+    top_margin = settings.get('subtitle_top_margin')
+    if top_margin is None:
+        top_margin = {'news_slide': 500, 'classic': 60}.get(preset, 30)
+    if settings.get('layout_preset') == 'news_slide':
+        # The lower white panel holds a large title and a separate caption lane.
+        # Keep subtitles below the title even if the user reduces their gap.
+        below = 1080 + max(top_margin, 500 if settings.get('show_title', True) else 0)
+        return dict(top=80, height=1000, inside=1080-inset,
+                    below=min(below, 1780), part=1810)
     if settings.get('layout_preset') == 'reference':
-        return dict(top=450, height=1000, inside=1450-inset, below=1480, part=1580)
-    return dict(top=330, height=1080, inside=1410-inset, below=1470, part=1760)
+        return dict(top=450, height=1000, inside=1450-inset, below=1450+top_margin, part=1580)
+    return dict(top=330, height=1080, inside=1410-inset, below=1410+top_margin, part=1760)
 
 
 def display_cues(cues, start, end):
@@ -198,6 +222,10 @@ def subtitle_documents(project, timeline, part):
     inside = settings['subtitle_position']=='inside'
     subtitle_anchor = 2 if inside else 8
     subtitle_margin = 1920-geometry['inside'] if inside else geometry['below']
+    subtitle_side_margin = 130 if settings.get('layout_preset') == 'news_slide' else 65
+    news_slide = settings.get('layout_preset') == 'news_slide'
+    title_font = 'Georgia' if news_slide else 'Arial'
+    subtitle_font = 'Segoe UI' if news_slide else 'Arial'
     header = f'''[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -207,8 +235,8 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Title,Arial,{settings['title_size']},&H00FFFFFF,&H00FFFFFF,&H90000000,&H90000000,-1,0,0,0,100,100,0,0,1,2,0,8,65,65,130,1
-Style: Sub,Arial,{settings['subtitle_size']},{ass_color(settings['subtitle_color'])},&H00FFFFFF,&H00202020,&H90000000,-1,0,0,0,100,100,0,0,1,3,1,{subtitle_anchor},65,65,{subtitle_margin},1
+Style: Title,{title_font},{settings['title_size']},&H00FFFFFF,&H00FFFFFF,&H90000000,&H90000000,-1,0,0,0,100,100,0,0,1,2,0,8,65,65,130,1
+Style: Sub,{subtitle_font},{settings['subtitle_size']},{ass_color(settings['subtitle_color'])},&H00FFFFFF,&H00202020,&H90000000,-1,0,0,0,100,100,0,0,1,3,1,{subtitle_anchor},{subtitle_side_margin},{subtitle_side_margin},{subtitle_margin},1
 Style: Part,Arial,32,&H00FFFFFF,&H00FFFFFF,&H70000000,&H70000000,-1,0,0,0,100,100,1,0,3,8,0,8,50,50,{geometry["part"]},1
 
 [Events]
@@ -216,9 +244,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
     part_label = {'English': 'PART', 'Chinese': '第'}.get(settings['language'], 'PHẦN')
     events = [f"Dialogue: 0,0:00:00.00,{ass_time(duration)},Title,,0,0,0,,{wrap_caption(settings['title'], settings['title_size'], max_lines=3)}", f"Dialogue: 0,0:00:00.00,{ass_time(duration)},Part,,0,0,0,,{part_label} {part['index']}"]
+    if not settings.get('show_title', True):
+        events = [e for e in events if ',Title,' not in e]
     if settings.get('output_mode') == 'single':
         events = [e for e in events if ',Part,' not in e]
-    if settings.get('layout_preset') == 'reference':
+    if settings.get('layout_preset') == 'reference' and settings.get('show_title', True):
         # A single dark title panel, matching the supplied finished-video references.
         box = r'{\an7\pos(120,240)\p1\bord0\shad0\1c&H000000&\1a&H20&}m 0 0 l 840 0 840 175 0 175'
         title = r'{\an5\pos(540,327)}' + wrap_caption(settings['title'], settings['title_size'], width=800, max_lines=3)
@@ -226,6 +256,11 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             f"Dialogue: 0,0:00:00.00,{ass_time(duration)},Title,,0,0,0,,{box}",
             f"Dialogue: 1,0:00:00.00,{ass_time(duration)},Title,,0,0,0,,{title}",
         ]
+    elif settings.get('layout_preset') == 'news_slide' and settings.get('show_title', True):
+        title = (r'{\an7\pos(130,1210)\1c&H000000&\3c&H00FFFFFF&\bord0\shad0}'
+                 + wrap_caption(settings['title'], settings['title_size'], width=820,
+                                max_lines=4, font_path=news_font_path('title')))
+        events[:1] = [f"Dialogue: 0,0:00:00.00,{ass_time(duration)},Title,,0,0,0,,{title}"]
     srt = []
     for cue in display_cues(timeline['cues'], part['start'], part['end']):
         a, b = max(cue['start'], part['start']) - part['start'], min(cue['end'], part['end']) - part['start']
@@ -287,8 +322,8 @@ def render_part(project, timeline, part, folder, check, width=1080, *, video_onl
             filters=[f for f in filters if not f.endswith(f'[a{i}]')]
         streams.append(f'[v{i}]' if video_only else f'[v{i}][a{i}]')
     filters.append(''.join(streams) + (f'concat=n={len(clips)}:v=1:a=0[video]' if video_only else f'concat=n={len(clips)}:v=1:a=1[video][original]'))
-    color = settings['background']
-    if settings['background_mode'] == 'blur':
+    color = '#ffffff' if settings.get('layout_preset') == 'news_slide' else settings['background']
+    if settings['background_mode'] == 'blur' and settings.get('layout_preset') != 'news_slide':
         bw,bh=even(270),even(480)
         filters += ['[video]split=2[fgin][bgin]', f'[bgin]scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh},gblur=sigma={max(1,15*scale)},scale={width}:{canvas_height}[background]']
     else:
@@ -307,7 +342,15 @@ def render_part(project, timeline, part, folder, check, width=1080, *, video_onl
         ]
     else:
         filters.append('[square]null[clean_square]')
-    filters.append(f'[background][clean_square]overlay=0:{top}:shortest=1,ass=filename={name}.ass,format=yuv420p,setsar=1[outv]')
+    if settings.get('layout_preset') == 'news_slide':
+        # Source-subtitle blur is applied to clean_square before this overlay,
+        # so its band stays on the source image, never on the white panel.
+        filters.append(f'[background][clean_square]overlay=0:{top}:shortest=1,'
+                       f'drawbox=x=0:y=0:w={even(70)}:h={canvas_height}:color=0xdd173c:t=fill,'
+                       f'drawbox=x=0:y={top+height}:w={width}:h={even(12)}:color=0xdd173c:t=fill,'
+                       f'ass=filename={name}.ass,format=yuv420p,setsar=1[outv]')
+    else:
+        filters.append(f'[background][clean_square]overlay=0:{top}:shortest=1,ass=filename={name}.ass,format=yuv420p,setsar=1[outv]')
     video_filter_count=len(filters)
     duck = '+'.join(f'between(t,{max(0,v["start"]-part["start"]):.6f},{min(part["duration"],v["end"]-part["start"]):.6f})' for v in voices) or '0'
     gate = '1'

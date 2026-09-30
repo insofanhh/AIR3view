@@ -59,16 +59,18 @@ class Settings(Model):
     asr_device: Literal['cpu', 'cuda'] = 'cpu'
     background: str = Field(default='#101826', pattern=r'^#[0-9a-fA-F]{6}$')
     background_mode: Literal['color', 'blur'] = 'blur'
-    layout_preset: Literal['classic', 'reference'] = 'reference'
+    layout_preset: Literal['classic', 'reference', 'news_slide'] = 'reference'
     fit: Literal['contain', 'cover'] = 'cover'
     crop_x: float = Field(default=50, ge=0, le=100)
     crop_y: float = Field(default=50, ge=0, le=100)
     title: str = Field(default='', max_length=220)
+    show_title: bool = True
     title_size: int = Field(default=36, ge=24, le=90)
     subtitle_size: int = Field(default=48, ge=24, le=80)
     subtitle_color: str = Field(default='#ffffff', pattern=r'^#[0-9a-fA-F]{6}$')
     subtitle_position: Literal['below', 'inside'] = 'inside'
     subtitle_bottom_margin: int = Field(default=10, ge=0, le=200)
+    subtitle_top_margin: int | None = Field(default=None, ge=0, le=700)
     subtitles: bool = True
     source_subtitle_blur: bool = False
     source_subtitle_blur_height: float = Field(default=22, ge=5, le=50)

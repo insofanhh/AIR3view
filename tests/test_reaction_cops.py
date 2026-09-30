@@ -6,7 +6,7 @@ import pytest
 from backend.models import Settings
 from backend.reaction_cops import (_planner_catalog, _clean_footage, _effective_duration,
                                    _fill_from_full_source, optimize_cues, validate_plan,
-                                   validated_output_title)
+                                   validated_output_title, commentary_quality_issue)
 from backend.timeline import build_story
 from backend.voice_repair import source_evidence
 
@@ -220,6 +220,7 @@ def test_reaction_plan_first_pipeline_keeps_hook_off_and_only_eligible_cues(monk
     project['settings']['reaction_commentary_count']=5
     project.update(id='reaction-test',source='fixture.mp4',summary='Unverified narrator claim',
                    scenes=[],hooks=[],exports=[],preview_exports=[],warnings=[])
+    project['voice_repair_state'] = {'story-sel0': {'approved_text': 'Old copied dialogue'}}
     project['settings']['provider']='openai'
     project['source_transcript']=project['transcript']
     monkeypatch.setattr(store,'project_dir',lambda _id:tmp_path)
@@ -257,6 +258,7 @@ def test_reaction_plan_first_pipeline_keeps_hook_off_and_only_eligible_cues(monk
     assert 'Request 5 distinct commentary points' in next(p for name,p in seen if name=='ReactionFootagePlan')
     assert result['duration_plan']['reaction_budget']['requested_commentary_count']==5
     assert result['duration_plan']['reaction_budget']['actual_commentary_count']==3
+    assert result['voice_repair_state'] == {}
     assert any('3/5 commentary points' in warning for warning in result['warnings'])
     assert 'Unverified narrator claim' not in next(p for name,p in seen if name=='ReactionFootagePlan')
     assert 'Unverified narrator claim' not in next(p for name,p in seen if name=='ScheduledNarration')
@@ -484,3 +486,63 @@ def test_commentary_setting_allows_evidence_limited_shortfall():
     plan = validate_plan(_fill_from_full_source(project,_short_ai_draft(),blocks,hook,budget),
                          project,check_text=False)
     assert sum(bool(s['narration']) for s in plan['selections']) == len(blocks) < 10
+
+
+def test_commentary_audit_rejects_character_voice_and_repeated_prose():
+    source = ("He touched me and he said I touched him. I did not. "
+              "He touched me again before I spoke.")
+    copied = "He touched me, and he said I touched him. I did not. He touched me again."
+    assert 'một hoặc hai câu' in commentary_quality_issue(copied, source, 6, 'English')
+    one_voice = "He touched me and he said I touched him; I did not touch him."
+    assert 'đọc lại lời nhân vật' in commentary_quality_issue(one_voice, source, 6, 'English')
+    repeated = ('The witness describes a confrontation at the exit, and officers ask what followed. '
+                'He says she kept coming at him while he backed away, and she kept coming at him.')
+    assert 'lặp lại' in commentary_quality_issue(repeated, 'She approached the exit.', 14, 'English')
+    valid = ('The account now shifts from the items to the reported physical confrontation. '
+             'Officers still need to connect that claim with the other accounts before deciding what happened.')
+    assert commentary_quality_issue(valid, source, 14, 'English') is None
+
+
+def test_last_commentary_stays_near_final_confirmed_scene():
+    project = _many_clean_cues(120)
+    blocks = _clean_footage(project)
+    hook = dict(start=0, end=0, title='', reason='Hook off', original_audio=False, narration='')
+    budget = _effective_duration(project, blocks, hook)
+    project['reaction_duration_budget'] = budget
+    plan = _fill_from_full_source(project, _short_ai_draft(), blocks, hook, budget)
+    total = sum(row['end']-row['start'] for row in plan['selections'])
+    elapsed = 0
+    last_end = 0
+    for row in plan['selections']:
+        elapsed += row['end']-row['start']
+        if row['narration']:
+            last_end = elapsed
+    assert total-last_end <= 20
+    voiced = [row for row in plan['selections'] if row['narration']]
+    voiced[-1]['narration'] = ''
+    with pytest.raises(ValueError, match='COMMENTARY cuối'):
+        validate_plan(plan, project, check_text=False)
+
+
+def test_writer_retries_copied_character_speech_before_approving(tmp_path):
+    from backend.story_schedule import write_scheduled
+    project, plan = fixture()
+    project['settings']['language'] = 'English'
+    source = ('The woman said she was on probation, then asked whether she had '
+              'to go to jail because of the bag.')
+    project['reaction_cues'][0]['text'] = source
+    project['source_speech']['items'][0]['text'] = source
+    plan['selections'][0]['evidence'] = 'SRC_CUES=["0"]\n' + source
+    for row in plan['selections'][1:]:
+        row['narration'] = ''
+    accepted = ('The encounter shifts from the disputed bag to the consequences she fears. '
+                'Officers still need to clarify the reported contact before deciding what follows from that exchange.')
+    calls = []
+    def ask(prompt, *_args):
+        calls.append(prompt)
+        ids = json.loads(prompt.split('\nREQUESTED SLOTS: ', 1)[1].split('\nACCEPTED', 1)[0])
+        text = source if len(calls) == 1 else accepted
+        return {'items': [{'id': row['id'], 'text': text} for row in ids]}
+    result = write_scheduled(plan, project, ask, tmp_path, lambda *_: None, lambda: None, locked=True)
+    assert len(calls) == 2
+    assert result['selections'][0]['narration'] == accepted

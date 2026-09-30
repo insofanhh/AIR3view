@@ -323,7 +323,7 @@ def editable(pid):
 
 @app.get('/api/health')
 def health():
-    return {'ok': True, 'ffmpeg': bool(shutil.which(FFMPEG) or Path(FFMPEG).is_file()), 'codex': bool(providers.codex_binary()), 'api_key': bool(providers.key()), 'gemini_api_key': bool(providers.key('gemini')), 'openai_key_source': providers.key_source('openai'), 'gemini_key_source': providers.key_source('gemini'), 'version': updates.installed_version(), 'voice_repair_version':providers.VOICE_REPAIR_VERSION}
+    return {'ok': True, 'ffmpeg': bool(shutil.which(FFMPEG) or Path(FFMPEG).is_file()), 'codex': bool(providers.codex_binary()), 'api_key': bool(providers.key()), 'gemini_api_key': bool(providers.key('gemini')), 'openai_key_source': providers.key_source('openai'), 'gemini_key_source': providers.key_source('gemini'), 'version': updates.installed_version(), 'voice_repair_version':providers.VOICE_REPAIR_VERSION, 'layout_schema_version': 2}
 
 
 @app.get('/api/export/storage')

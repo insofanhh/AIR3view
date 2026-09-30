@@ -7,6 +7,40 @@ from backend.render import render
 
 
 @pytest.mark.skipif(not shutil.which(FFMPEG), reason='FFmpeg required')
+def test_news_slide_renders_white_panel_and_source_blur(tmp_path, monkeypatch):
+    import av
+    from backend.timeline import build
+    from backend.render import render_part
+
+    monkeypatch.setattr(store, 'DATA', tmp_path)
+    monkeypatch.setattr(store, 'DB', tmp_path / 'test.sqlite3')
+    store.init()
+    project = store.create('Slide test', {'kind': 'upload', 'file': 'source.mp4'})
+    folder = store.project_dir(project['id'])
+    run([FFMPEG, '-y', '-f', 'lavfi', '-i', 'color=blue:s=320x240:r=30:d=1',
+         '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', '1',
+         '-c:v', 'libx264', '-c:a', 'aac', folder / 'source.mp4'])
+    project['metadata'] = probe(folder / 'source.mp4')
+    project['settings'].update(layout_preset='news_slide', show_title=True,
+                               title='Cảnh sát chặn nhầm kẻ trộm', subtitle_color='#111111',
+                               subtitle_position='below', source_subtitle_blur=True,
+                               render_encoder='cpu', output_mode='single')
+    project['transcript'] = [{'id': 'c1', 'start': .1, 'end': .9,
+                              'text': 'Diễn biến bất ngờ.', 'speaker': 'original'}]
+    timeline = build(project)
+    result = render_part(project, timeline, timeline['parts'][0], folder,
+                         lambda: None, width=360, video_only=True)
+    ass = store.asset(project['id'], result['ass']).read_text('utf-8-sig')
+    assert 'Style: Title,Georgia,' in ass and 'Style: Sub,Segoe UI,' in ass
+    assert 'Cảnh sát chặn nhầm kẻ trộm' in ass and 'Diễn biến bất ngờ.' in ass
+    with av.open(str(store.asset(project['id'], result['file']))) as video:
+        frame = next(video.decode(video=0)).to_ndarray(format='rgb24')
+    assert frame[450, 200].min() > 230  # white title/caption panel
+    assert frame[450, 5, 0] > 150 and frame[450, 5, 2] < 130  # red side rail
+    assert frame[180, 200, 2] > 150  # source footage remains in the upper pane
+
+
+@pytest.mark.skipif(not shutil.which(FFMPEG), reason='FFmpeg required')
 def test_later_part_input_seek_retains_correct_source_frame(tmp_path, monkeypatch):
     import av
     import numpy as np

@@ -16,7 +16,7 @@ from pydantic import Field
 from .models import Model, StoryAnswer
 
 
-VERSION = 4
+VERSION = 5
 NOT_ENOUGH = 'not_enough_evidence: Không đủ hội thoại hiện trường đã xác minh để viết Reaction COPS. Không dùng lời dẫn hậu kỳ hoặc câu lẫn vai trò để bù.'
 RULE = '''REACTION COPS COMMENTARY ONLY v2. No spoken intro or outro, greeting,
 teaser, whole-case opening summary, moral/lesson, closing question or CTA.
@@ -52,6 +52,46 @@ def commentary_violation(text):
                  r'lời dẫn cho biết|người dẫn kể lại|ở giây thứ \d+)\b',
                  r'RC:COMMENTARY|SRC_CUES=|\[CLIPFORGE:')
     return next((pattern for pattern in forbidden if re.search(pattern,text,re.I)),None)
+
+
+def commentary_quality_issue(text, source_text, seconds, language):
+    """Reject speech impersonation and broken commentary before it reaches TTS.
+
+    Source wording is evidence, not a script for the host.  The overlap test
+    deliberately needs several copied phrases, so an attributed short quote
+    does not make a grounded commentary invalid.
+    """
+    if commentary_violation(text):
+        return 'COMMENTARY chứa lời mở/kết, mốc thời gian hoặc metadata.'
+    sentences = re.findall(r'[^.!?。！？]+[.!?。！？]+', text)
+    if len(sentences) > 2 or (language == 'English' and seconds >= 8 and not sentences):
+        return 'COMMENTARY cần một hoặc hai câu hoàn chỉnh, không kể dài từng lời thoại.'
+    tokens = re.findall(r"[^\W_]+", text.casefold(), re.UNICODE)
+    source = re.findall(r"[^\W_]+", source_text.casefold(), re.UNICODE)
+    if language == 'English' and len(tokens) > min(55, math.ceil(seconds * 3.6)):
+        return 'COMMENTARY quá nhiều từ cho cảnh; cần lược ý, giữ nhịp đọc tự nhiên.'
+    if len(tokens) >= 8 and len(source) >= 4:
+        source_grams = {tuple(source[i:i+4]) for i in range(len(source)-3)}
+        copied = set()
+        for index in range(len(tokens)-3):
+            if tuple(tokens[index:index+4]) in source_grams:
+                copied.update(range(index,index+4))
+        if len(copied) >= 8 and len(copied) / len(tokens) >= .52:
+            return 'COMMENTARY đang đọc lại lời nhân vật; cần bình luận bằng góc nhìn người dẫn chuyện.'
+    if len(tokens) >= 12:
+        seen = set()
+        for index in range(len(tokens)-4):
+            phrase = tuple(tokens[index:index+5])
+            if phrase in seen and len(set(phrase)) >= 3:
+                return 'COMMENTARY lặp lại cùng một ý/cụm từ.'
+            seen.add(phrase)
+    return None
+
+
+def commentary_source_text(project, evidence):
+    ids = _evidence_ids(evidence)
+    by_id = {str(c['id']): c['text'] for c in project.get('reaction_cues', [])}
+    return ' '.join(by_id.get(cue_id, '') for cue_id in ids)
 
 
 def source_title(project):
@@ -431,6 +471,37 @@ def _fill_from_full_source(project, draft, blocks, hook, budget):
         commentary.add(max(available, key=lambda i: (
             min(abs(selected[i]['start']-selected[j]['start']) for j in commentary),
             selected[i]['priority'])))
+    # A short cue is still useful as original dialogue, but gives the host no
+    # room to explain a turn. Move commentary to a longer clean clip in the
+    # same chapter where the source permits it.
+    for index in sorted(commentary):
+        if selected[index]['end']-selected[index]['start'] >= 8:
+            continue
+        alternatives = [i for i, block in enumerate(selected)
+                        if i not in commentary and chapter(block) == chapter(selected[index])
+                        and block['end']-block['start'] >= 8]
+        if alternatives:
+            replacement = max(alternatives, key=lambda i: (
+                selected[i]['priority'], selected[i]['end']-selected[i]['start'],
+                -abs(i-index)))
+            commentary.remove(index)
+            commentary.add(replacement)
+    # The last point should accompany the late confirmed development, not
+    # precede a long un-commented tail simply because a chapter anchor scored
+    # higher. Prefer the latest reasonably long clip in the final 25 seconds.
+    elapsed = 0.0
+    output_ends = []
+    for block in selected:
+        elapsed += block['end']-block['start']
+        output_ends.append(elapsed)
+    late = [i for i, block in enumerate(selected)
+            if output_ends[i] >= elapsed-25 and block['end']-block['start'] >= 3]
+    if late and commentary:
+        last = max(commentary)
+        replacement = max(late)
+        if replacement > last and replacement not in commentary:
+            commentary.remove(last)
+            commentary.add(replacement)
     by_id = {c['id']: c for c in project['reaction_cues']}
     selections = []
     for i, block in enumerate(selected):
@@ -528,6 +599,14 @@ def validate_plan(raw, project, *, check_text=True):
             raise ValueError('Reaction COPS cần ít nhất một commentary point có chứng cứ hiện trường.')
         if commentary[-1]['start'] < selected[0]['start'] + .65 * (selected[-1]['end']-selected[0]['start']):
             raise ValueError('Điểm COMMENTARY cuối dồn quá sớm; cần giải thích diễn biến cuối đã xác minh.')
+        elapsed = hook_length
+        last_commentary_end = 0.0
+        for item in selected:
+            elapsed += item['end']-item['start']
+            if item['narration'].strip():
+                last_commentary_end = elapsed
+        if elapsed-last_commentary_end > max(20, min(40, elapsed*.08)):
+            raise ValueError('Điểm COMMENTARY cuối cách diễn biến hiện trường cuối quá xa.')
         clean = _clean_footage(project)
         if clean and selected[-1]['end'] < clean[-1]['start']-.05:
             raise ValueError('Kế hoạch bỏ chương cuối còn hội thoại hiện trường đã xác minh.')
@@ -732,11 +811,17 @@ def plan_reaction(project, report, check):
         target_duration=round(x['end']-x['start']-.04,3),audio='',audio_hash='',duration=0,cues=[],caption_version=0)
         for x in result['selections'] if x['narration'].strip()]
     old={n.get('segment_id'):n for n in project.get('narrations',[])}
+    reusable_repair_ids = set()
     for n in candidate['narrations']:
         previous=old.get(n['segment_id'])
         if previous and all(n[k]==previous.get(k) for k in ('text','start','target_duration','enabled')):
             for key in ('audio','audio_hash','duration','cues','caption_version'):
                 n[key]=copy.deepcopy(previous.get(key,n[key]))
+            reusable_repair_ids.add(n['id'])
+    candidate['voice_repair_state'] = {
+        narration_id: copy.deepcopy(state)
+        for narration_id, state in project.get('voice_repair_state', {}).items()
+        if narration_id in reusable_repair_ids}
     fingerprint=plan_fingerprint(candidate)
     candidate.update(story_plan=result,plan_fingerprint=fingerprint,script_language=settings['language'],
                      title_language=settings['language'],exports=[],preview_exports=[])

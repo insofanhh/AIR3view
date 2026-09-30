@@ -37,9 +37,85 @@ def test_localize_preserves_ids_timing_and_source(tmp_path, monkeypatch):
 def test_incomplete_translation_is_not_applied(tmp_path, monkeypatch):
     p = sample(tmp_path, monkeypatch)
     monkeypatch.setattr(providers, 'ask_ai', lambda *args: {'items': [{'id': 'title', 'text': 'Changed'}]})
-    with pytest.raises(ValueError, match='thiếu/thừa'):
+    with pytest.raises(ValueError, match='còn thiếu'):
         providers.localize(p, lambda *a: None, lambda: None)
     assert p['settings']['title'] == 'Cuộc đối thoại'
+
+
+def test_localize_repairs_only_missing_translation_ids(tmp_path, monkeypatch):
+    p = sample(tmp_path, monkeypatch)
+    prompts = []
+    answers = iter([
+        {'items': [{'id': 'title', 'text': 'The conversation'},
+                   {'id': 'n0', 'text': 'The officer approaches.'}]},
+        {'items': [{'id': 'c0', 'text': 'Hello.'}]},
+    ])
+    def translate(prompt, *args):
+        prompts.append(prompt)
+        return next(answers)
+    monkeypatch.setattr(providers, 'ask_ai', translate)
+    out = providers.localize(p, lambda *a: None, lambda: None)
+    assert len(prompts) == 2
+    assert '"id": "title"' in prompts[0] and '"id": "title"' not in prompts[1]
+    assert '"id": "c0"' in prompts[1]
+    assert out['settings']['title'] == 'The conversation'
+    assert out['narrations'][0]['text'] == 'The officer approaches.'
+    assert out['transcript'][0]['text'] == 'Hello.'
+
+
+def test_localize_retries_duplicate_id_in_a_smaller_batch(tmp_path, monkeypatch):
+    p = sample(tmp_path, monkeypatch)
+    answers = iter([
+        {'items': [{'id': 'title', 'text': 'The conversation'},
+                   {'id': 'n0', 'text': 'Wrong first version'},
+                   {'id': 'n0', 'text': 'Wrong second version'},
+                   {'id': 'c0', 'text': 'Hello.'}]},
+        {'items': [{'id': 'n0', 'text': 'The officer approaches.'}]},
+    ])
+    monkeypatch.setattr(providers, 'ask_ai', lambda *args: next(answers))
+    out = providers.localize(p, lambda *a: None, lambda: None)
+    assert out['narrations'][0]['text'] == 'The officer approaches.'
+
+
+def test_localize_splits_request_when_output_budget_is_too_small(tmp_path, monkeypatch):
+    p = sample(tmp_path, monkeypatch)
+    def translate(prompt, *args):
+        if '"id": "title"' in prompt and '"id": "n0"' in prompt:
+            raise providers.OpenAIOutputIncomplete('max_output_tokens')
+        if '"id": "title"' in prompt:
+            return {'items': [{'id': 'title', 'text': 'The conversation'}]}
+        return {'items': [{'id': 'n0', 'text': 'The officer approaches.'},
+                          {'id': 'c0', 'text': 'Hello.'}]}
+    monkeypatch.setattr(providers, 'ask_ai', translate)
+    out = providers.localize(p, lambda *a: None, lambda: None)
+    assert out['settings']['title'] == 'The conversation'
+    assert out['transcript'][0]['text'] == 'Hello.'
+
+
+def test_reaction_cops_translates_verified_captions_without_rewriting_evidence(tmp_path, monkeypatch):
+    from backend.timeline import reaction_subtitle_rows
+
+    p = sample(tmp_path, monkeypatch)
+    p['settings']['editorial_mode'] = 'reaction_cops'
+    p['reaction_cues'] = [
+        {'id': 'c1', 'start': 1, 'end': 3, 'text': 'Xin chào.', 'source_cue_ids': ['c1']},
+        {'id': 'r1', 'start': 4, 'end': 5, 'text': 'Đi nhanh!', 'source_cue_ids': ['other']},
+    ]
+    p['source_speech'] = {'items': [
+        {'role': 'participant', 'confidence': .9},
+        {'role': 'participant', 'confidence': .9},
+    ]}
+    monkeypatch.setattr(providers, 'ask_ai', lambda *args: {'items': [
+        {'id': 'title', 'text': 'The conversation'},
+        {'id': 'n0', 'text': 'The officer approaches.'},
+        {'id': 'c0', 'text': 'Hello.'},
+        {'id': 'r1', 'text': 'Move quickly!'},
+    ]})
+    out = providers.localize(p, lambda *a: None, lambda: None)
+    assert [c['text'] for c in reaction_subtitle_rows(out)] == ['Hello.', 'Move quickly!']
+    assert [c['text'] for c in out['reaction_cues']] == ['Xin chào.', 'Đi nhanh!']
+    out['reaction_cues'][1]['text'] = 'New source evidence.'
+    assert reaction_subtitle_rows(out)[1]['text'] == 'New source evidence.'
 
 
 def test_matching_script_and_channel_caption_language_need_no_ai_call(tmp_path, monkeypatch):

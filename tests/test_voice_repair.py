@@ -72,6 +72,19 @@ def test_reaction_commentary_can_end_briefly_before_scene_with_source_audio():
     assert duration_is_acceptable(7.74, 8.093, tail_gap=gap)
     assert not duration_is_acceptable(6.5, 8.093, tail_gap=gap)
     assert reaction_tail_gap({'editorial_mode': 'standard'}, 8.093) == 0
+    assert reaction_tail_gap(settings, 15) == pytest.approx(3.5)
+
+
+def test_reaction_duration_repair_rejects_source_dialogue_as_ai_voice():
+    import json
+    source = 'You gotta take it off, okay? Take it off now. You take it off; I cannot do it.'
+    evidence = 'IN_SCENE EVIDENCE ONLY: ' + json.dumps([{'text': source}])
+    def copied(*_args):
+        return {'text': 'You gotta take it off, okay? Take it off now. You take it off; I cannot do it.'}
+    with pytest.raises(ValueError, match='không hợp lệ'):
+        repair_text('The officer gives a search instruction.', evidence, 'English', 5, 3,
+                    {'editorial_mode': 'reaction_cops', 'language': 'English'},
+                    None, lambda: None, copied, max_attempts=1)
 
 
 def test_fit_voice_keeps_fixed_pace_and_natural_tail(tmp_path, monkeypatch):

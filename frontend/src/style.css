@@ -15,6 +15,13 @@
 .canvas.reference .canvas-sub{top:1480px}
 .canvas.reference .canvas-sub.inside{top:auto;bottom:480px}
 .canvas.reference .canvas-part{top:1580px;background:#000d}
+.canvas.news-slide{background:#fff;color:#111}
+.canvas.news-slide::after{content:"";position:absolute;inset:0 auto 0 0;width:70px;background:#dd173c;pointer-events:none;z-index:3}
+.canvas.news-slide .canvas-source{top:80px;height:1000px}
+.canvas.news-slide .canvas-source::after{content:"";position:absolute;left:0;right:0;bottom:-12px;height:12px;background:#dd173c}
+.canvas.news-slide .canvas-title{top:1210px;left:130px;right:130px;max-height:350px;text-align:left;color:#111;font-family:Georgia,serif;text-shadow:none;line-height:1.14}
+.canvas.news-slide .canvas-sub{top:1520px;left:130px;right:130px;color:#111;font-family:'Segoe UI',sans-serif;text-shadow:1px 1px 1px #fff,-1px -1px 1px #fff}
+.canvas.news-slide .canvas-part{top:1810px;color:#111;background:#fff8}
 
 .source-subtitle-mask{position:absolute;left:0;right:0;bottom:0;height:22%;backdrop-filter:blur(32px);pointer-events:none}
 

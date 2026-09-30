@@ -80,14 +80,20 @@ def ranges(timeline,name,part):
 
 
 def video_key(project,timeline,part,width,encoder):
-    from .render import subtitle_documents, video_encoder_args
+    from .render import subtitle_documents, video_encoder_args, news_font_path
     import os
     ass,_=subtitle_documents(project,timeline,part)
     font=Path(os.environ.get('AIR3VIEW_FONT','C:/Windows/Fonts/arialbd.ttf' if os.name=='nt' else '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'))
+    font_identity=file_identity(font) if font.is_file() else str(font)
+    if project['settings'].get('layout_preset') == 'news_slide':
+        font_identity={'default':font_identity, **{
+            kind:(file_identity(path) if path.is_file() else str(path))
+            for kind in ('title','subtitle')
+            for path in (Path(news_font_path(kind)),)}}
     return digest(dict(version=VERSION,source=file_identity(store.asset(project['id'],project['source']['file'])),
         clips=clip_key(timeline,part),width=width,encoder=video_encoder_args(encoder),
         visual={k:project['settings'].get(k) for k in VISUAL_SETTINGS},ass=ass,
-        font=file_identity(font) if font.is_file() else str(font)))[:32]
+        font=font_identity))[:32]
 
 
 def audio_key(project,timeline,part):

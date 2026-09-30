@@ -1,5 +1,5 @@
 import math
-from .providers import voice_hash
+from .providers import voice_hash, reaction_caption_signature
 
 FPS = 30
 
@@ -155,6 +155,19 @@ def build(project, strict=False):
     return build_story(project, strict)
 
 
+def reaction_subtitle_rows(project):
+    cues = project.get('reaction_cues', [])
+    verified = {i for i, role in enumerate(project.get('source_speech', {}).get('items', []))
+                if role['role'] == 'participant' and role['confidence'] >= .7}
+    rows = [cue for i, cue in enumerate(cues) if i in verified]
+    if (project.get('reaction_caption_language') == project['settings']['language']
+            and project.get('reaction_caption_source') == reaction_caption_signature(cues)):
+        captions = project.get('reaction_caption_texts', {})
+        rows = [{**cue, 'text': captions.get(cue['id'], cue['text']), 'words': []}
+                for cue in rows]
+    return rows
+
+
 def build_story(project, strict=False):
     import copy
     from .story import storytelling, validate_narration_budget
@@ -196,9 +209,7 @@ def build_story(project, strict=False):
     selections = {x['id']: x for x in plan['selections']}
     subtitle_rows = project['transcript']
     if settings.get('editorial_mode') == 'reaction_cops':
-        verified = {i for i,r in enumerate(project.get('source_speech',{}).get('items',[]))
-                    if r['role']=='participant' and r['confidence']>=.7}
-        subtitle_rows = [c for i,c in enumerate(project.get('reaction_cues',[])) if i in verified]
+        subtitle_rows = reaction_subtitle_rows(project)
     for clip in clips:
         for left,right in excluded:
             a,b = max(left,clip['source_start']),min(right,clip['source_end'])
