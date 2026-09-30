@@ -19,7 +19,7 @@ type Timeline = { source_mutes?:{start:number;end:number}[]; original_audio?:{st
 type Job = { id:string; kind:string; state:string; progress:number; message:string; error:string };
 type KeyResult = { provider:'openai'|'gemini'; configured:boolean; storage:'local_encrypted'; source?:'local_encrypted'|'environment'|'none' };
 type YouTubeAuth = {mode:'none'|'chrome'|'edge'|'file';has_cookie_file:boolean};
-type UpdateStatus = { available:boolean; status:'ok'|'unavailable'; current_version:string; latest_version:string|null; release_url:string|null; install_supported:boolean; installer_size:number|null };
+type UpdateStatus = { available:boolean; status:'ok'|'unavailable'; reason?:'rate_limited'|'connection_failed'; current_version:string; latest_version:string|null; release_url:string|null; install_supported:boolean; installer_size:number|null };
 type UpdateDownload = {phase:'idle'|'downloading'|'ready'|'installing'|'error';version:string;downloaded:number;total:number;error:string};
 const emptyTimeline:Timeline = {clips:[],voices:[],cues:[],parts:[],duration:0,warnings:[]};
 const media = (p:Project,file:string) => `/media/${p.id}/${file.split('/').map(encodeURIComponent).join('/')}`;
@@ -119,8 +119,10 @@ function App(){
       const result=await api<UpdateStatus>('/update'+(manual?'?refresh=true':''));
       setUpdateInfo(result);
       if(manual&&result.available)setDismissedUpdate('');
-      if(manual)setNotice(result.status==='unavailable'?'Không thể kiểm tra cập nhật. Hãy thử lại khi có Internet.':result.available?`Có AIR3view ${result.latest_version}. Xem lựa chọn cập nhật phía trên.`:'Bạn đang dùng phiên bản mới nhất.');
-    }catch{if(manual)setNotice('Không thể kiểm tra cập nhật. Hãy thử lại khi có Internet.');}
+      if(manual)setNotice(result.status==='unavailable'
+        ?result.reason==='rate_limited'?'GitHub đang giới hạn lượt kiểm tra cập nhật. Hãy thử lại sau.':'Không kết nối được trang phát hành GitHub. Hãy kiểm tra mạng rồi thử lại.'
+        :result.available?`Có AIR3view ${result.latest_version}. Xem lựa chọn cập nhật phía trên.`:'Bạn đang dùng phiên bản mới nhất.');
+    }catch{if(manual)setNotice('Không kết nối được dịch vụ AIR3view để kiểm tra cập nhật. Hãy khởi động lại ứng dụng rồi thử lại.');}
     finally{if(manual)setCheckingUpdate(false);}
   }
   useEffect(()=>{void checkUpdate();const id=setInterval(()=>{void checkUpdate();},6*60*60*1000);return()=>clearInterval(id);},[]);

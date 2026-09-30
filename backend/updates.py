@@ -1,6 +1,7 @@
 """Check published Windows installers without slowing normal local requests."""
 
 import hashlib
+import html
 import json
 import os
 import re
@@ -8,6 +9,7 @@ import shutil
 import subprocess
 import threading
 import time
+from xml.etree import ElementTree
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -17,6 +19,7 @@ import requests
 VERSION_FILE = Path(__file__).resolve().parent.parent / 'APP_VERSION'
 API_URL = 'https://api.github.com/repos/insofanhh/AIR3view/releases/latest'
 RELEASES_URL = 'https://github.com/insofanhh/AIR3view/releases'
+RELEASES_FEED_URL = RELEASES_URL + '.atom'
 CACHE_SECONDS = 6 * 60 * 60
 ERROR_CACHE_SECONDS = 10 * 60
 _lock = threading.Lock()
@@ -103,6 +106,72 @@ def _published_release(data: dict, current: str) -> dict:
             'installer_sha256': digest[7:].lower() if verified_asset else None}
 
 
+def _web_release(current: str) -> dict:
+    """Use GitHub's public release pages when its unauthenticated API is limited.
+
+    The feed identifies the release. The installer is offered in-app only when
+    GitHub also publishes its SHA-256 and the download reports an exact size.
+    """
+    headers = {'User-Agent': 'AIR3view-update-check'}
+    feed = requests.get(RELEASES_FEED_URL, headers=headers, timeout=(3, 8))
+    feed.raise_for_status()
+    if len(feed.content) > 512 * 1024:
+        raise ValueError('GitHub release feed is too large')
+    root = ElementTree.fromstring(feed.content)
+    entries = root.findall('{http://www.w3.org/2005/Atom}entry')
+    candidates = []
+    for entry in entries:
+        link = entry.find('{http://www.w3.org/2005/Atom}link')
+        url = link.get('href', '') if link is not None else ''
+        prefix = RELEASES_URL + '/tag/'
+        tag = url[len(prefix):] if url.startswith(prefix) else ''
+        if version_tuple(tag) is not None and url == prefix + tag:
+            candidates.append((version_tuple(tag), tag, url))
+    if not candidates:
+        raise ValueError('No published version in GitHub release feed')
+    _, tag, release_url = max(candidates)
+    version = tag.removeprefix('v')
+    result = {'available': version_tuple(tag) > version_tuple(current), 'status': 'ok',
+              'current_version': current, 'latest_version': version,
+              'release_url': release_url, 'install_supported': False,
+              'installer_size': None, 'installer_sha256': None}
+    if not result['available'] or not install_supported():
+        return result
+    try:
+        asset_path = f'/insofanhh/AIR3view/releases/download/{tag}/AIR3view-Setup-{version}-win64.exe'
+        assets = requests.get(RELEASES_URL + '/expanded_assets/' + tag,
+                              headers=headers, timeout=(3, 8))
+        assets.raise_for_status()
+        if len(assets.content) > 512 * 1024:
+            return result
+        page = html.unescape(assets.text)
+        marker = 'href="' + asset_path + '"'
+        position = page.find(marker)
+        if position < 0:
+            return result
+        tail = page[position + len(marker):position + len(marker) + 7000]
+        next_asset = tail.find('releases/download/')
+        if next_asset >= 0:
+            tail = tail[:next_asset]
+        digest = re.search(r'sha256:([0-9a-fA-F]{64})', tail)
+        if not digest:
+            return result
+        download = requests.get('https://github.com' + asset_path, headers=headers,
+                                stream=True, timeout=(3, 10))
+        try:
+            download.raise_for_status()
+            host = urlparse(download.url).hostname or ''
+            size = int(download.headers.get('Content-Length', '0'))
+            if (host == 'github.com' or host.endswith('.githubusercontent.com')) and 0 < size <= 2 * 1024**3:
+                result.update(install_supported=True, installer_size=size,
+                              installer_sha256=digest.group(1).lower())
+        finally:
+            download.close()
+    except (requests.RequestException, ValueError, TypeError, OverflowError):
+        pass  # Still show the published release link without offering an unverified installer.
+    return result
+
+
 def check_updates(refresh: bool = False) -> dict:
     """Cache both success and failure; never make connectivity a startup requirement."""
     current = installed_version()
@@ -119,11 +188,17 @@ def check_updates(refresh: bool = False) -> dict:
             response.raise_for_status()
             result = _published_release(response.json(), current)
             lifetime = CACHE_SECONDS
-        except (requests.RequestException, ValueError, TypeError, KeyError):
-            result = {'available': False, 'status': 'unavailable', 'current_version': current,
-                      'latest_version': None, 'release_url': None,
-                      'install_supported': False, 'installer_size': None, 'installer_sha256': None}
-            lifetime = ERROR_CACHE_SECONDS
+        except (requests.RequestException, ValueError, TypeError, KeyError) as error:
+            try:
+                result = _web_release(current)
+                lifetime = CACHE_SECONDS
+            except (requests.RequestException, ValueError, TypeError, ElementTree.ParseError):
+                code = getattr(getattr(error, 'response', None), 'status_code', None)
+                reason = 'rate_limited' if code in (403, 429) else 'connection_failed'
+                result = {'available': False, 'status': 'unavailable', 'reason': reason,
+                          'current_version': current, 'latest_version': None, 'release_url': None,
+                          'install_supported': False, 'installer_size': None, 'installer_sha256': None}
+                lifetime = ERROR_CACHE_SECONDS
         _cache.update(until=time.monotonic() + lifetime, value=result)
         return dict(result)
 

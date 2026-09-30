@@ -64,7 +64,82 @@ def test_offline_check_is_nonblocking_and_cached(monkeypatch):
     first = updates.check_updates()
     assert first['status'] == 'unavailable' and not first['available']
     assert updates.check_updates() == first
-    assert len(calls) == 1
+    assert len(calls) == 2  # API and public release feed both failed.
+    assert first['reason'] == 'connection_failed'
+
+
+def test_rate_limited_api_uses_verified_public_release(monkeypatch, tmp_path):
+    version_file = tmp_path / 'APP_VERSION'
+    version_file.write_text('1.0.0', encoding='utf-8')
+    monkeypatch.setattr(updates, 'VERSION_FILE', version_file)
+    monkeypatch.setattr(updates, 'install_supported', lambda: True)
+    monkeypatch.setattr(updates, '_cache', {'until': 0.0, 'value': None})
+    digest = 'b' * 64
+    asset_path = '/insofanhh/AIR3view/releases/download/v1.2.0/AIR3view-Setup-1.2.0-win64.exe'
+    feed = (b'<feed xmlns="http://www.w3.org/2005/Atom"><entry>'
+            b'<link href="https://github.com/insofanhh/AIR3view/releases/tag/v1.2.0"/>'
+            b'</entry></feed>')
+    asset_page = f'<a href="{asset_path}">AIR3view installer</a><span>sha256:{digest}</span>'
+    calls = []
+
+    class Response:
+        def __init__(self, *, content=b'', status=200, url='', headers=None):
+            self.content = content
+            self.text = content.decode('utf-8')
+            self.status_code = status
+            self.url = url
+            self.headers = headers or {}
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                error = updates.requests.HTTPError('API rate limit exceeded')
+                error.response = self
+                raise error
+
+        def close(self):
+            pass
+
+    def get(url, **_kwargs):
+        calls.append(url)
+        if url == updates.API_URL:
+            return Response(status=403)
+        if url == updates.RELEASES_FEED_URL:
+            return Response(content=feed)
+        if url == updates.RELEASES_URL + '/expanded_assets/v1.2.0':
+            return Response(content=asset_page.encode())
+        if url == 'https://github.com' + asset_path:
+            return Response(url='https://release-assets.githubusercontent.com/installer',
+                            headers={'Content-Length': '123456'})
+        raise AssertionError(url)
+
+    monkeypatch.setattr(updates.requests, 'get', get)
+    result = updates.check_updates(refresh=True)
+    assert result['status'] == 'ok' and result['available']
+    assert result['latest_version'] == '1.2.0'
+    assert result['install_supported']
+    assert result['installer_sha256'] == digest
+    assert result['installer_size'] == 123456
+    assert len(calls) == 4
+
+
+def test_public_release_without_digest_never_enables_in_app_install(monkeypatch):
+    monkeypatch.setattr(updates, 'install_supported', lambda: True)
+    feed = (b'<feed xmlns="http://www.w3.org/2005/Atom"><entry>'
+            b'<link href="https://github.com/insofanhh/AIR3view/releases/tag/v1.2.0"/>'
+            b'</entry></feed>')
+    class Response:
+        content = feed
+        text = feed.decode()
+        def raise_for_status(self): pass
+    class Assets(Response):
+        content = b'<a href="/insofanhh/AIR3view/releases/download/v1.2.0/AIR3view-Setup-1.2.0-win64.exe">Installer</a>'
+        text = content.decode()
+    def get(url, **_kwargs):
+        return Response() if url == updates.RELEASES_FEED_URL else Assets()
+    monkeypatch.setattr(updates.requests, 'get', get)
+    result = updates._web_release('1.0.0')
+    assert result['available'] and not result['install_supported']
+    assert result['installer_sha256'] is None
 
 
 def test_download_verifies_release_digest_before_marking_ready(tmp_path, monkeypatch):
