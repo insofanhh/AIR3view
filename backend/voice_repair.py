@@ -145,6 +145,9 @@ def reaction_tail_gap(settings: dict, target: float) -> float:
     if (settings.get('editorial_mode') != 'reaction_cops' or
             settings.get('production_workflow', 'plan_first') != 'plan_first' or target <= 0):
         return 0
+    if settings.get('reaction_scene_duration_mode') == 'range':
+        # A window is a ceiling across cuts, not a requirement to fill with words.
+        return target
     return min(1.25, target * .2) if target <= 8.5 else min(3.5, target * .25)
 
 

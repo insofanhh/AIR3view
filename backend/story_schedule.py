@@ -239,6 +239,7 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
     from .story_bridges import active as bridge_active, concise, RULE as BRIDGE_RULE
     bridge_mode=bridge_active(project)
     reaction = project['settings'].get('editorial_mode') == 'reaction_cops'
+    window_mode = reaction and project['settings'].get('reaction_scene_duration_mode') == 'range'
     if reaction:
         from .reaction_cops import (commentary_quality_issue, commentary_source_text,
                                     commentary_word_limit)
@@ -247,7 +248,7 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
             return None
         seconds = max(0, entry['end'] - entry['start'] - .04)
         issue = commentary_quality_issue(text, commentary_source_text(project, entry['evidence']),
-                                           seconds, project['settings']['language'])
+                                           seconds, project['settings']['language'], check_duration=not window_mode)
         return issue
     from .scene_repair import repair as repair_scene_geometry
     if locked:
@@ -255,7 +256,9 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
     else:
         raw = repair_scene_geometry(raw, project, ask_ai, folder, report, check)
         result = schedule(raw, project)
-    voiced = [(i, x) for i, x in enumerate(result['selections']) if x['narration']]
+    from .reaction_commentary import slot as commentary_slot
+    voiced = [(i, commentary_slot(result, i) if reaction else x)
+              for i, x in enumerate(result['selections']) if x['narration']]
     from .hook_policy import slots, RULE as HOOK_RULE
     hook_slot=next((x for x in slots(result) if x.get('id')=='hook'),None)
     if hook_slot:
@@ -291,7 +294,7 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
         'retention_policy_version':project.get('retention_policy_version',0),
         'story_bridge_version':project.get('story_bridge_version',0),
         'hook_policy_version':project.get('hook_policy_version',0),
-         'version': 4,
+         'version': 5 if reaction else 4,
         'editorial_mode': project['settings'].get('editorial_mode','standard'),
         'language': project['settings']['language'],
         'draft_rule': project['settings']['draft_rule'],
@@ -304,7 +307,8 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
         # placed dialogue could reuse prose under the wrong segment IDs.
         'selections': [dict(id=str(index), part=item['part'], start=item['start'], end=item['end'],
                             section=item['section'], evidence=item['evidence'],
-                            narrated=bool(item['narration']))
+                            narrated=bool(item['narration']),
+                            **({'commentary_span':item['commentary_span']} if item.get('commentary_span', 1)>1 else {}))
                        for index, item in enumerate(result['selections'])],
         'context': full_context,
     }
@@ -348,6 +352,7 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
                             'min_words': min(maximum, math.ceil(spoken_seconds * rate * .8)),
                             'max_words': maximum,
                             'target_words': min(maximum, round(spoken_seconds * rate)), 'evidence': item['evidence'],
+                            **({'source_ranges':item['source_ranges']} if 'source_ranges' in item else {}),
                             'required_content':item['evidence'] if reaction else result['outcome'] if item['section']=='ending' else
                                result['synopsis'] if item['section'] in ('opening','hook') else item['evidence']})
         accepted = {}
@@ -355,7 +360,8 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
             cached_text = checkpoint['lines'].get(entry['id'], '')
             text = clean_narration(cached_text.strip()) if isinstance(cached_text, str) else ''
             units = speech_units(text)
-            if (entry['min_words'] <= units <= entry['max_words'] and not wrong_language(text, project['settings']['language'])
+            if ((entry['min_words'] <= units <= entry['max_words'] or (window_mode and units > 0))
+                    and not wrong_language(text, project['settings']['language'])
                     and not reaction_issue(text, entry)
                     and (not bridge_mode or concise(text,project['settings']['language']))):
                 accepted[entry['id']] = text
@@ -372,7 +378,7 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
             checkpoint['generation'] += 1
             save_checkpoint()
             prompt_context = context
-            if reaction and project['settings'].get('provider') == 'openai':
+            if reaction:
                 from .reaction_cops import _evidence_ids
                 prior = {}
                 for entry in pending:
@@ -400,6 +406,7 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
                       '\nWHOLE SOURCE: ' + json.dumps(prompt_context, ensure_ascii=False, separators=(',', ':')))
             if reaction:
                 from .reaction_cops import RULE as REACTION_RULE
+                from .reaction_scene_duration import instructions as scene_instructions
                 prompt = ('REACTION COPS TIMED COMMENTARY v1. Write only commentary points in '
                           +project['settings']['language']+'. Return items {id,text} exactly once for '
                           'each requested slot. Every point must use ONLY the cited in-scene cues '
@@ -410,8 +417,12 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
                           'connected sentences; keep natural pace and the fixed min_words..max_words '
                           'when possible. Do not invent guilt, motives or results. Cite no time in text. '
                           'The clip times are scheduling metadata, not spoken content. '
+                          'A slot may span several source_ranges: its word budget is for the entire output window, '
+                          'not for each short visual cut. Link only the cited developments; do not preview cues '
+                          'outside this window or imply omitted source gaps were continuous action. '
                           f'The requested setting is {project["settings"].get("reaction_commentary_count", 5)} '
                           'commentary points; the locked slots below are the evidence-feasible count.\n'+REACTION_RULE
+                          +scene_instructions(project['settings'])
                           +'\nREPAIR GENERATION: '+str(checkpoint['generation'])
                           +'\nREQUESTED SLOTS: '+json.dumps(pending,ensure_ascii=False)
                           +'\nACCEPTED IMMUTABLE LINES: '+json.dumps(accepted,ensure_ascii=False)
@@ -439,7 +450,8 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
                     issues.append(f'ID {entry["id"]}: {reaction_issue(text, entry)}')
                 elif bridge_mode and not concise(text,project['settings']['language']):
                     issues.append(f'ID {entry["id"]}: use only 1–2 concise sentences, preserving the key facts; no detailed paragraph.')
-                elif entry['min_words'] <= units <= entry['max_words']:
+                elif (entry['min_words'] <= units <= entry['max_words'] or
+                      (window_mode and units > 0)):
                     accepted[entry['id']] = text
                     checkpoint['lines'][entry['id']] = text
                 else:
@@ -453,20 +465,22 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
         # adjust only these narrations; never discard a complete factual line
         # or fail the whole video on an estimate that is not audio duration.
         pending = [entry for entry in entries if entry['id'] not in accepted]
-        if pending and all(len(returned.get(entry['id'], [])) == 1
+        for entry in pending:
+            if (len(returned.get(entry['id'], [])) == 1
                            and returned[entry['id']][0].strip()
                            and not wrong_language(returned[entry['id']][0], project['settings']['language'])
                            and not reaction_issue(returned[entry['id']][0], entry)
                            and (not bridge_mode or concise(returned[entry['id']][0],project['settings']['language']))
-                           for entry in pending):
-            for entry in pending:
+                           ):
                 accepted[entry['id']] = returned[entry['id']][0]
                 checkpoint['lines'][entry['id']] = accepted[entry['id']]
-            save_checkpoint()
+        save_checkpoint()
         if len(accepted) != len(entries):
             raise ValueError('Lời kể chưa khớp lịch dựng sau 6 lượt sửa có mục tiêu: ' + ' '.join(issues))
         for index, item in group:
             item['narration'] = accepted[str(index)]
             if index=='hook':
                 result['hook']['narration']=item['narration']
+            else:
+                result['selections'][index]['narration']=item['narration']
     return validate_plan(result, project, check_text=False)

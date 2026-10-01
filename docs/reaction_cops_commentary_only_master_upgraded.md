@@ -162,6 +162,40 @@ CHỌN DIỄN BIẾN THEO CHƯƠNG CÂU CHUYỆN
   có thời gian dương, đúng thứ tự, không chồng lấn, không chứa narration và
   không vượt max_end_cue_id hoặc giới hạn thời lượng tool cung cấp.
 
+THỜI LƯỢNG CẢNH — TÙY CHỌN CỦA AIR3VIEW
+- SCENE_DURATION_MODE mặc định là auto: giữ quy trình chọn và dựng hiện tại.
+  Khi mode=range, tool cung cấp SCENE_MIN_SECONDS và SCENE_MAX_SECONDS (1–25).
+  Ưu tiên mỗi đoạn nguồn liên tục trong khoảng này. “Cảnh” không phải cue phụ
+  đề hoặc một commentary; hook có thời lượng riêng và không chịu khoảng này.
+- Chọn diễn biến và bằng chứng trước, điều chỉnh ranh giới cảnh sau. Thứ tự
+  ưu tiên: chứng cứ đúng → hiểu đủ hội thoại/diễn biến → chương quan trọng →
+  thời lượng tổng → khoảng thời lượng cảnh. Không chia đều timeline.
+- Chỉ ghép cue liền kề sạch, cùng diễn biến; không vượt lời dẫn nguồn, lời
+  chưa rõ vai trò, sự kiện mới hoặc khoảng nghỉ lớn hơn 1,5 giây để lấp cảnh.
+  Chỉ tách tại ranh giới cue trọn vẹn; ưu tiên cuối lượt nói và giữ cặp hỏi–đáp.
+  Không cắt ngang câu nói, câu trả lời quyết định hoặc hành động cần ngữ cảnh.
+- Khoảng thời lượng là mục tiêu biên tập. Nếu không có điểm cắt an toàn, cho
+  phép cảnh ngắn/dài hơn và tool ghi nhận ngoại lệ. Cửa sổ commentary vẫn
+  chịu giới hạn kỹ thuật 25 giây; cảnh dài không có chỗ cho voice được giữ
+  tiếng gốc, không ép thêm commentary để đạt setting.
+- Chia footage không tạo thêm commentary. Không lặp cảnh, đệm im lặng,
+  kéo tốc độ voice hoặc viết thêm câu rỗng để đạt thời lượng. Số commentary,
+  cách chọn bước ngoặt và văn phong bên dưới giữ nguyên. Nhịp voice 11–16
+  giây là tham chiếu cho lời đọc, không phải độ dài bắt buộc của mọi cảnh.
+- Khi chọn cảnh ngắn, một commentary được đọc xuyên qua nhiều cảnh liền kề
+  trong cùng phần và diễn biến phù hợp. Thời lượng cửa sổ đọc là tổng thời
+  lượng các cảnh output, không tính khoảng nguồn bị bỏ giữa chúng. Mỗi cảnh
+  vẫn giữ điểm cắt và cue dẫn chứng riêng; nội dung commentary chỉ dùng cue
+  trong nhóm hiện tại hoặc chứng cứ đã xác nhận trước đó, không tiết lộ nhóm sau.
+  Tool ưu tiên cửa sổ 8–16 giây, tối đa 25 giây, thay vì ép lời bình vào cảnh
+  1–3 giây. Thiếu footage phù hợp thì chuyển vị trí hoặc giảm số commentary
+  và ghi cảnh báo, không viết lời rỗng cho đủ số.
+- Đo audio thực tế tại tốc độ giọng đã chọn. Nếu voice dài hơn cửa sổ, thử
+  nhận thêm cảnh output sạch, chưa thuộc commentary khác, cùng diễn biến và
+  cùng phần; nếu không thể thì rút gọn riêng lời bình. Nếu voice kết thúc
+  sớm, trả tiếng và phụ đề hiện trường về; không thêm từ hoặc đổi tốc độ
+  chỉ để lấp đầy cửa sổ. Chỉ giảm âm lượng nền trong lúc AI đang nói.
+
 HỒ SƠ GIỌNG MẪU — DOCUMENTARY INVESTIGATION
 - Viết như người kể chuyện điều tra bình tĩnh đang nối các giai đoạn của sự
   việc, không như người reaction đưa hot take sau từng câu thoại. Giọng chắc,

@@ -65,6 +65,10 @@ def adjust(project,narration,measured,target,diagnostics=None):
     try:contract_check(project)
     except (ValueError,KeyError,TypeError) as exc:
         reject(str(exc));return None
+    if (not hook and project['settings'].get('editorial_mode') == 'reaction_cops'
+            and project['settings'].get('reaction_scene_duration_mode') == 'range'):
+        from .reaction_commentary import extend_to_audio
+        return extend_to_audio(project, narration, measured, diagnostics)
     row=project['story_plan']['hook'] if hook else rows[index]
     a,b=round(row['start']*30),round(row['end']*30)
     minimum=3 if hook or project.get('story_bridge_version') else 4

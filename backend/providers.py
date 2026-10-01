@@ -676,6 +676,8 @@ def fit_voice_audio(audio,destination,check,target_duration=0,speed=1,engine='Om
         # VieNeu needs the global speed applied locally; OmniVoice received
         # sp already. Only +/-5% around that fixed pace is permitted.
         lower, upper = .95*stable_speed, 1.05*stable_speed
+        if target_duration and tail_gap >= target_duration:
+            lower = upper = stable_speed
     if target_duration and (measured / target_duration > upper or
             (measured / target_duration < lower and target_duration-measured/lower > tail_gap)):
         raise DurationMismatchError(engine, measured/(stable_speed or 1), target_duration,audio_path=audio)
@@ -685,7 +687,8 @@ def fit_voice_audio(audio,destination,check,target_duration=0,speed=1,engine='Om
     if target_duration:
         # Keep the narrator within the fixed pace band. A brief unvoiced tail
         # leaves room for source ambience instead of inventing filler words.
-        factor = max(lower, measured / target_duration) if tail_gap else measured / target_duration
+        factor = (stable_speed if stable_speed is not None and tail_gap >= target_duration
+                  else max(lower, measured / target_duration) if tail_gap else measured / target_duration)
         args += ['-af', f'atempo={factor:.8f}']
     elif speed != 1:
         args += ['-af', f'atempo={speed:.8f}']

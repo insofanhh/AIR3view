@@ -207,6 +207,12 @@ def build_story(project, strict=False):
     from .source_speech import active, muted_ranges
     excluded = muted_ranges(project) if narrated and active(project) else []
     selections = {x['id']: x for x in plan['selections']}
+    from .reaction_commentary import members
+    window_ends = {}
+    for i, row in enumerate(plan['selections']):
+        if row.get('commentary_span', 1) > 1:
+            last_id = members(plan, i)[-1]['id']
+            window_ends[row['id']] = next(c['end'] for c in clips if c['segment_id'] == last_id)
     subtitle_rows = project['transcript']
     if settings.get('editorial_mode') == 'reaction_cops':
         subtitle_rows = reaction_subtitle_rows(project)
@@ -220,7 +226,7 @@ def build_story(project, strict=False):
             source_mutes.append({'start':clip['start'],'end':clip['end']})
         if narrated:
             keep = plan['hook'].get('original_audio',True) if clip['kind']=='hook' else not selections[clip['segment_id']]['narration'].strip()
-            if not keep:
+            if not keep and settings.get('editorial_mode') != 'reaction_cops':
                 continue
             if project['metadata'].get('has_audio'):
                 original_audio.append({'start': clip['start'], 'end': clip['end']})
@@ -244,7 +250,7 @@ def build_story(project, strict=False):
             continue
         clip=candidates[0]
         start=frame(clip['start']+n['start']-clip['source_start'])
-        if n.get('duration',0)+start>clip['end']+.001:
+        if n.get('duration',0)+start>window_ends.get(clip['segment_id'], clip['end'])+.001:
             message=f"Lời dẫn {n['id']} dài hơn cảnh đã chọn. Rút ngắn lời hoặc phân tích lại trước khi xuất."
             if strict: raise ValueError(message)
             warnings.append(message)
@@ -257,6 +263,21 @@ def build_story(project, strict=False):
     virtual.update(metadata={**project['metadata'],'duration':cursor},transcript=mapped_cues,narrations=mapped_narrations)
     virtual['settings'].update(hook_enabled=False,narration_mode='overlay')
     result=build_legacy(virtual,strict)
+    if narrated and settings.get('editorial_mode') == 'reaction_cops':
+        # Recover real dialogue/subtitles after the actual voice ends, including
+        # inside a multi-cut commentary window. Duck only while voice is audible.
+        for voice in result['voices']:
+            remaining = []
+            for interval in original_audio:
+                a, b = interval['start'], interval['end']
+                if voice['end'] <= a or voice['start'] >= b:
+                    remaining.append(interval)
+                else:
+                    if a < voice['start']:
+                        remaining.append({'start': a, 'end': voice['start']})
+                    if voice['end'] < b:
+                        remaining.append({'start': voice['end'], 'end': b})
+            original_audio = remaining
     # Clip and part boundaries belong to the editorial plan, not source splitting.
     result.update(clips=clips,parts=parts,duration=cursor,planned=True)
     if narrated:

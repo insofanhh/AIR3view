@@ -78,7 +78,9 @@ def _openai_plan_context(project):
 def geometry(plan):
     return {'hook': {k: plan['hook'][k] for k in ('start', 'end')} | ({'original_audio':False} if not plan['hook'].get('original_audio',True) else {}),
             'selections': [{k: x[k] for k in ('id','start','end','part','section','narration_offset')}
-                           | {'voiced': bool(x['narration'].strip())} for x in plan['selections']]}
+                           | {'voiced': bool(x['narration'].strip())}
+                           | ({'commentary_span': x['commentary_span']} if x.get('commentary_span', 1) > 1 else {})
+                           for x in plan['selections']]}
 
 
 def lock_schedule(raw, project, report):
@@ -171,7 +173,8 @@ def contract_check(project):
             continue
         slot = slots.get(n.get('segment_id'))
         if (not slot or abs(n['start']-slot['start']) > .001
-                or abs(n.get('target_duration',0)-(slot['end']-slot['start']-.04)) > .002):
+                or abs(n.get('target_duration',0)-(slot['end']-slot['start']-.04)) > .002
+                or (slot.get('commentary_span', 1) > 1 and n.get('evidence') != slot['evidence'])):
             raise ValueError('Mốc/thời lượng lời kể không khớp slot đã khóa. Lập lại kế hoạch thay vì ép giọng vào cảnh.')
 
 

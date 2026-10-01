@@ -534,9 +534,10 @@ def batch_excel_template():
     sheet = workbook.active
     sheet.title = 'Videos'
     sheet.append(['url', 'title', 'summary_minutes', 'editorial_mode', 'hook_enabled', 'hook_duration',
+                  'reaction_scene_duration_mode', 'reaction_scene_min_seconds', 'reaction_scene_max_seconds',
                   'export_mode', 'export_part_count'])
     sheet.append(['https://www.youtube.com/watch?v=EXiQCyqxmSE', 'Video mẫu', 3,
-                  'reaction_cops', False, None, 'single', 2])
+                  'reaction_cops', False, None, 'auto', 10, 20, 'single', 2])
     stream = BytesIO()
     workbook.save(stream)
     stream.seek(0)

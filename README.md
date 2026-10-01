@@ -14,6 +14,13 @@ Từ bản có chức năng kiểm tra cập nhật, AIR3view tự kiểm tra Gi
 
 ## Tính năng
 
+### Cập nhật v0.1.14
+
+- Thêm khoảng thời lượng mỗi cảnh Reaction COPS từ 1–25 giây trong dự án đơn, sản xuất video lô và file Excel; mặc định Tự động giữ cách dựng hiện tại.
+- Commentary có thể đọc xuyên nhiều cảnh ngắn, dùng tổng thời lượng nhóm và dẫn chứng của từng cảnh; giữ nguyên điểm cắt, thứ tự diễn biến và số commentary đã chọn.
+- Canh theo audio thực tế, giữ tốc độ giọng đã chọn: nhận thêm cảnh phù hợp hoặc rút gọn riêng lời bình khi dài; trả tiếng/phụ đề hiện trường về khi AI nói xong.
+- Giữ đoạn đã hoàn thành khi retry, kiểm tra cửa sổ commentary không chồng nhau hoặc vượt ranh giới phần; hỗ trợ bản dựng Reaction COPS có nhiều hơn 500 cảnh ngắn.
+
 ### Cập nhật v0.1.13
 
 - Mở đầy đủ **Kết nối & cài đặt** trong modal từ thư viện hoặc màn hình sản xuất hàng loạt; trong dự án vẫn chuyển đến tab Kết nối. Nút **Lưu cài đặt** nằm ở góc dưới bên phải, luôn hiển thị khi cuộn; cấu hình kết nối mặc định được lưu trên máy.
@@ -25,6 +32,7 @@ Kiểm tra bản phát hành: build frontend, kiểm tra bố cục modal trên 
 
 ### Các tính năng chính
 
+- **Thời lượng mỗi cảnh Reaction COPS:** trong cấu hình đầu ra của dự án hoặc cấu hình lô, chọn **Tự động** (giữ cách dựng hiện tại) hoặc **Theo khoảng thời lượng**, nhập 1–25 giây cho tối thiểu/tối đa (mặc định 10–20). Đây là mục tiêu cho đoạn footage nguồn liên tục, không phải cue phụ đề hay thời lượng voice; hook vẫn có setting riêng. Tool ưu tiên ranh giới cue, giữ hỏi–đáp, không ghép qua lời dẫn nguồn và ghi cảnh ngoài khoảng trong cảnh báo/`duration_plan.reaction_scene_duration`. Khi chọn cảnh ngắn, một commentary có thể đọc xuyên nhiều cảnh output liền kề: cửa sổ đọc tính bằng tổng thời lượng các cảnh, giữ nguyên từng điểm cắt và dẫn chứng, tối đa 25 giây. Không tăng commentary để đạt số cảnh. Audio được đo tại tốc độ đã chọn; có thể nhận thêm cảnh phù hợp hoặc sửa riêng lời bình nếu dài, còn kết thúc sớm thì trả tiếng/phụ đề gốc về. Chi tiết nhóm được lưu tại `duration_plan.commentary_windows`. Thay đổi khoảng cần phân tích lại, nhưng không làm mất cache ASR/phân loại nguồn. Excel hỗ trợ các cột `reaction_scene_duration_mode`, `reaction_scene_min_seconds`, `reaction_scene_max_seconds`.
 - **Một video hoàn chỉnh:** AI chọn cảnh từ toàn bộ nguồn và giữ diễn biến chính. Tại bước xuất, có thể giữ một tệp hoặc chia đều bản dựng hoàn chỉnh thành nhiều phần mà không lập lại kịch bản.
 - Lời dẫn có **Mở đầu → Diễn biến → Kết thúc**. Mở đầu phát sau hook và một đoạn hình gốc; kết thúc nêu kết quả và bài học.
 - **Reaction COPS** là chế độ riêng trong “Cách xuất video”: tối ưu cue nguồn có ánh xạ, chỉ dùng hội thoại hiện trường đã xác minh để chọn cảnh và viết các điểm COMMENTARY, không tạo intro/outro. Trong tab Giọng, **Số commentary** thay thanh tỷ lệ thoại gốc; chọn 1–10 điểm (mặc định 5). Nếu nguồn không đủ bước ngoặt riêng có chứng cứ, tool dùng ít điểm hơn và cảnh báo thay vì thêm lời bình yếu. Hook mặc định tắt; khi bật chỉ nhận cảnh 3–7 giây có tiếng thật phù hợp, không thay bằng lời hook AI. Nếu thiếu bằng chứng hiện trường, tác vụ báo `not_enough_evidence` thay vì lấy lời dẫn hậu kỳ để bù. Quy tắc gốc: [Reaction COPS master prompt](docs/reaction_cops_commentary_only_master_upgraded.md).

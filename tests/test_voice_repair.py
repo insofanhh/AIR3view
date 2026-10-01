@@ -107,6 +107,24 @@ def test_fit_voice_keeps_fixed_pace_and_natural_tail(tmp_path, monkeypatch):
         providers.fit_voice_audio(raw, output, lambda: None, 8.093, stable_speed=1)
 
 
+def test_multi_cut_window_keeps_exact_voice_speed_and_allows_original_audio_tail(tmp_path, monkeypatch):
+    raw = tmp_path / 'raw.wav'
+    raw.write_bytes(b'raw')
+    output = tmp_path / 'voice.wav'
+    filters = []
+    monkeypatch.setattr(providers, 'probe', lambda _: {'duration':5})
+    def fake_run(args, check_cancel):
+        filters.append(args[args.index('-af')+1])
+        Path(args[-1]).write_bytes(b'voice')
+    monkeypatch.setattr(media, 'run', fake_run)
+    gap = reaction_tail_gap({'editorial_mode':'reaction_cops', 'production_workflow':'plan_first',
+                             'reaction_scene_duration_mode':'range'}, 12)
+    result = providers.fit_voice_audio(raw, output, lambda: None, 12, stable_speed=1, tail_gap=gap)
+    assert result['tempo'] == 1
+    assert filters == ['atempo=1.00000000']
+    assert duration_is_acceptable(5, 12, tail_gap=gap)
+
+
 def test_repair_prompt_contains_measured_ratio_and_evidence():
     prompt = repair_prompt("The dog runs.", "frame 17", "English", 8, 4)
     assert "8.000" in prompt and "4.000" in prompt

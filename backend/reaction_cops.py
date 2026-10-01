@@ -13,7 +13,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from .models import Model, StoryAnswer
+from .models import Model, StoryAnswer, StorySelection
 
 
 VERSION = 5
@@ -54,7 +54,7 @@ def commentary_violation(text):
     return next((pattern for pattern in forbidden if re.search(pattern,text,re.I)),None)
 
 
-def commentary_quality_issue(text, source_text, seconds, language):
+def commentary_quality_issue(text, source_text, seconds, language, *, check_duration=True):
     """Reject speech impersonation and broken commentary before it reaches TTS.
 
     Source wording is evidence, not a script for the host.  The overlap test
@@ -68,7 +68,7 @@ def commentary_quality_issue(text, source_text, seconds, language):
         return 'COMMENTARY cần một hoặc hai câu hoàn chỉnh, không kể dài từng lời thoại.'
     tokens = re.findall(r"[^\W_]+", text.casefold(), re.UNICODE)
     source = re.findall(r"[^\W_]+", source_text.casefold(), re.UNICODE)
-    if language == 'English' and len(tokens) > commentary_word_limit(seconds, language):
+    if language == 'English' and len(tokens) > (commentary_word_limit(seconds, language) if check_duration else 55):
         return 'COMMENTARY quá nhiều từ cho cảnh; cần lược ý, giữ nhịp đọc tự nhiên.'
     if len(tokens) >= 8 and len(source) >= 4:
         source_grams = {tuple(source[i:i+4]) for i in range(len(source)-3)}
@@ -105,7 +105,9 @@ def repair_commentary_for_voice(project, narration, ask_ai, folder, report, chec
     language = project['settings']['language']
     seconds = narration.get('target_duration', 0)
     source_text = commentary_source_text(project, narration.get('evidence', ''))
-    issue = commentary_quality_issue(narration['text'], source_text, seconds, language)
+    estimated_duration = project['settings'].get('reaction_scene_duration_mode') != 'range'
+    issue = commentary_quality_issue(narration['text'], source_text, seconds, language,
+                                    check_duration=estimated_duration)
     if not issue:
         return False
     roles = project.get('source_speech', {}).get('items', [])
@@ -154,7 +156,7 @@ def repair_commentary_for_voice(project, narration, ask_ai, folder, report, chec
         except ValidationError:
             last_issue = 'AI trả về sai định dạng lời bình.'
             continue
-        last_issue = (commentary_quality_issue(candidate, source_text, seconds, language)
+        last_issue = (commentary_quality_issue(candidate, source_text, seconds, language, check_duration=estimated_duration)
                       or ('Lời bình sai ngôn ngữ.' if wrong_language(candidate, language) else ''))
         if not candidate or candidate == narration['text'].strip():
             last_issue = 'AI chưa thay đổi đoạn lời bình.'
@@ -304,6 +306,12 @@ class ReactionFootagePlan(Model):
     selections: list[ReactionFootage] = Field(min_length=1, max_length=80)
 
 
+class ReactionEdit(StoryAnswer):
+    # The AI draft remains bounded at 80. Deterministic short-cut edits may
+    # contain many more scenes without adding model requests or commentary.
+    selections: list[StorySelection] = Field(min_length=1, max_length=5000)
+
+
 class ReactionTitle(Model):
     title: str = Field(min_length=1, max_length=220)
 
@@ -440,6 +448,10 @@ def _clean_footage(project, max_seconds=16):
     """
     from .source_speech import allowed
     from .retention import runs
+    from .reaction_scene_duration import limits, clean_blocks
+
+    if limits(project['settings']):
+        return clean_blocks(project)
 
     cues = project.get('reaction_cues', [])
     roles = project.get('source_speech', {}).get('items', [])
@@ -495,6 +507,12 @@ def _fill_from_full_source(project, draft, blocks, hook, budget):
     """Lock a chronological, evidence-spanning edit before filling spare time."""
     count = budget['part_count']
     target = budget['effective_seconds'] * count - (hook['end'] - hook['start'])
+    from .reaction_scene_duration import limits, clean_blocks
+    ranged = bool(limits(project['settings']))
+    if ranged:
+        anchor_ids = [x['source_cue_ids'][0] for x in draft.get('selections', [])
+                      if x.get('source_cue_ids')]
+        blocks = clean_blocks(project, anchor_ids)
     if not blocks or target <= 0:
         raise ValueError(NOT_ENOUGH)
     selected = []
@@ -537,12 +555,16 @@ def _fill_from_full_source(project, draft, blocks, hook, budget):
         raise ValueError(NOT_ENOUGH)
     # Commentary count is an editorial setting, independent of original-audio
     # share. A source with fewer distinct clean blocks cannot be padded.
-    desired_commentary = min(project['settings'].get('reaction_commentary_count', 5), len(selected))
+    voiced_indices = {i for i, b in enumerate(selected)
+                      if not ranged or b['end'] - b['start'] <= 25 + .001}
+    if not voiced_indices:
+        raise ValueError(NOT_ENOUGH + ' Các cảnh hội thoại trọn vẹn đều vượt 25 giây; không có cảnh sạch phù hợp cho commentary.')
+    desired_commentary = min(project['settings'].get('reaction_commentary_count', 5), len(voiced_indices))
     indexed = {id(block): i for i,block in enumerate(selected)}
     anchor_indices = sorted({indexed[id(blocks[i])] for i in chapter_anchors.values()
-                             if id(blocks[i]) in indexed})
+                             if id(blocks[i]) in indexed and indexed[id(blocks[i])] in voiced_indices})
     if not anchor_indices:
-        anchor_indices = [0]
+        anchor_indices = [min(voiced_indices)]
     if desired_commentary == 1:
         commentary = {anchor_indices[-1]}
     elif len(anchor_indices) > desired_commentary:
@@ -554,7 +576,7 @@ def _fill_from_full_source(project, draft, blocks, hook, budget):
     else:
         commentary = set(anchor_indices)
     while len(commentary) < desired_commentary:
-        available = [i for i in range(len(selected)) if i not in commentary]
+        available = [i for i in range(len(selected)) if i not in commentary and i in voiced_indices]
         if not available:
             break
         commentary.add(max(available, key=lambda i: (
@@ -567,7 +589,7 @@ def _fill_from_full_source(project, draft, blocks, hook, budget):
         if selected[index]['end']-selected[index]['start'] >= 8:
             continue
         alternatives = [i for i, block in enumerate(selected)
-                        if i not in commentary and chapter(block) == chapter(selected[index])
+                        if i not in commentary and i in voiced_indices and chapter(block) == chapter(selected[index])
                         and block['end']-block['start'] >= 8]
         if alternatives:
             replacement = max(alternatives, key=lambda i: (
@@ -584,7 +606,7 @@ def _fill_from_full_source(project, draft, blocks, hook, budget):
         elapsed += block['end']-block['start']
         output_ends.append(elapsed)
     late = [i for i, block in enumerate(selected)
-            if output_ends[i] >= elapsed-25 and block['end']-block['start'] >= 3]
+            if i in voiced_indices and output_ends[i] >= elapsed-25 and block['end']-block['start'] >= 3]
     if late and commentary:
         last = max(commentary)
         replacement = max(late)
@@ -602,6 +624,11 @@ def _fill_from_full_source(project, draft, blocks, hook, budget):
             'narration_offset': 0,
             'evidence': 'SRC_CUES='+json.dumps(ids, ensure_ascii=False)+'\n'+
                         ' '.join(by_id[cue_id]['text'] for cue_id in ids)})
+    if ranged:
+        from .reaction_commentary import allocate
+        selections = allocate(selections, commentary, desired_commentary)
+        if not any(x['narration'] for x in selections):
+            raise ValueError(NOT_ENOUGH + ' Không có nhóm cảnh sạch đủ thời lượng cho một commentary tự nhiên.')
     # Repair must not retain promises made by an invalid, underfilled AI draft.
     event_texts = [by_id[cue_id]['text'] for i in sorted(commentary)
                    for cue_id in selected[i]['source_cue_ids'][:1]]
@@ -653,7 +680,7 @@ def validate_plan(raw, project, *, check_text=True):
     result = copy.deepcopy(raw)
     for item in result.get('selections', []):
         item.pop('id', None)
-    result = StoryAnswer.model_validate(result).model_dump()
+    result = ReactionEdit.model_validate(result).model_dump()
     duration = project['metadata']['duration']
     count, _ = output_budget(project['settings'], duration)
     hook = result['hook']
@@ -665,6 +692,8 @@ def validate_plan(raw, project, *, check_text=True):
     if bool(hook_length) != bool(project['settings'].get('hook_enabled')):
         raise ValueError('Hook không khớp cấu hình Reaction COPS.')
     selected = result['selections']
+    from .reaction_commentary import validate as validate_windows, members
+    validate_windows(result)
     if any(x['section'] != 'development' for x in selected):
         raise ValueError('Reaction COPS chỉ có các điểm diễn biến COMMENTARY; không tạo đoạn opening/ending.')
     previous_end, previous_part = 0, 1
@@ -678,7 +707,7 @@ def validate_plan(raw, project, *, check_text=True):
         totals[item['part']] += b-a
         if item['narration_offset'] > .05:
             raise ValueError('Commentary phải bắt đầu tại đầu cảnh đã khóa.')
-        if item['narration'].strip() and b-a > 25:
+        if item['narration'].strip() and item.get('commentary_span', 1) == 1 and b-a > 25:
             raise ValueError('Mỗi commentary point cần cảnh tối đa 25 giây.')
     if set(x['part'] for x in selected) != set(totals):
         raise ValueError('Kế hoạch chưa có cảnh cho đủ số phần.')
@@ -686,14 +715,16 @@ def validate_plan(raw, project, *, check_text=True):
         commentary = [x for x in selected if x['narration'].strip()]
         if not commentary:
             raise ValueError('Reaction COPS cần ít nhất một commentary point có chứng cứ hiện trường.')
-        if commentary[-1]['start'] < selected[0]['start'] + .65 * (selected[-1]['end']-selected[0]['start']):
+        last_index = next(i for i, x in enumerate(selected) if x is commentary[-1])
+        last_group = members(result, last_index)
+        if last_group[-1]['end'] < selected[0]['start'] + .65 * (selected[-1]['end']-selected[0]['start']):
             raise ValueError('Điểm COMMENTARY cuối dồn quá sớm; cần giải thích diễn biến cuối đã xác minh.')
         elapsed = hook_length
         last_commentary_end = 0.0
-        for item in selected:
+        for i, item in enumerate(selected):
             elapsed += item['end']-item['start']
             if item['narration'].strip():
-                last_commentary_end = elapsed
+                last_commentary_end = elapsed + sum(x['end']-x['start'] for x in members(result, i)[1:])
         if elapsed-last_commentary_end > max(20, min(40, elapsed*.08)):
             raise ValueError('Điểm COMMENTARY cuối cách diễn biến hiện trường cuối quá xa.')
         clean = _clean_footage(project)
@@ -755,6 +786,7 @@ def plan_reaction(project, report, check):
     planner_catalog=_planner_catalog(catalog,candidate['metadata']['duration'],
                                       per_zone=planner_width, zones=8) if settings.get('provider') == 'openai' else _planner_catalog(catalog,candidate['metadata']['duration'])
     original_title = source_title(candidate)
+    from .reaction_scene_duration import instructions as scene_instructions, limits as scene_limits, audit as scene_audit
     prompt = ('REACTION COPS FOOTAGE PLAN v2. Select footage BEFORE writing any host text. '
               'IN_SCENE_CATALOG is a small editorial SAMPLE, not the full available duration. '
               f'The complete classified source has {budget["available_seconds"]:.1f}s clean footage; '
@@ -782,7 +814,7 @@ def plan_reaction(project, report, check):
               f'effective source-feasible target {budget["effective_seconds"]:.1f}s per part including hook in part 1; '
               'No repeated body footage or invented events. Cover the opening, each evidenced '
               'phase change, and the last verified development.\n' + RULE + '\n'
-              + duration_planning_instructions(candidate)
+              + duration_planning_instructions(candidate) + scene_instructions(settings)
               + '\nHOOK: ' + json.dumps(hook,ensure_ascii=False)
               + '\nSOURCE CHAPTER COVERAGE (excerpts only, not extra citations): '
               + json.dumps(event_map,ensure_ascii=False)
@@ -834,6 +866,12 @@ def plan_reaction(project, report, check):
                  'outcome':draft['last_confirmed_event'],'lesson':'No spoken lesson in Reaction COPS.',
                  'hook':hook,'selections':rows}
             try:
+                if scene_limits(settings):
+                    # Apply scene preferences to the final full-source edit too,
+                    # not just the sampled AI draft. Commentary count stays independent.
+                    raw = _fill_from_full_source(candidate, draft, clean_blocks, hook, budget)
+                    locked = validate_plan(raw, candidate, check_text=False)
+                    break
                 if sum(bool(x['narration']) for x in rows) != desired_commentary:
                     raise ValueError(f'Cần {desired_commentary} commentary points khi nguồn sạch cho phép.')
                 locked=validate_plan(raw,candidate,check_text=False)
@@ -897,10 +935,11 @@ def plan_reaction(project, report, check):
     candidate['settings'].update(hook_enabled=bool(selected_hook),hook_start=hook['start'],hook_end=hook['end'] if selected_hook else 5,
                                  title=output_title,narration_mode='overlay',part_durations=[])
     candidate['hooks']=[hook] if selected_hook else []
+    from .hook_policy import slots as narration_slots
     candidate['narrations']=[dict(id='story-'+x['id'],segment_id=x['id'],start=x['start'],text=x['narration'].strip(),
         section=x['section'],part=x['part'],evidence=x['evidence'],enabled=True,
         target_duration=round(x['end']-x['start']-.04,3),audio='',audio_hash='',duration=0,cues=[],caption_version=0)
-        for x in result['selections'] if x['narration'].strip()]
+        for x in narration_slots(result) if x['narration'].strip()]
     old={n.get('segment_id'):n for n in project.get('narrations',[])}
     reusable_repair_ids = set()
     for n in candidate['narrations']:
@@ -929,6 +968,17 @@ def plan_reaction(project, report, check):
         'speech_fingerprint':candidate['source_speech']['fingerprint'],
         'input_fingerprint':fingerprint,'schedule':result,'geometry':geometry(result),
         'reaction_cops_version':VERSION,'retention':measured_retention}
+    scene_stats = scene_audit(result['selections'], settings)
+    from .reaction_commentary import audit as window_audit
+    candidate['duration_plan']['commentary_windows'] = window_audit(result)
+    if scene_stats is not None:
+        candidate['duration_plan']['reaction_scene_duration'] = scene_stats
+        if scene_stats['exceptions']:
+            candidate.setdefault('warnings', []).append(
+                f'Reaction COPS: {len(scene_stats["exceptions"])}/{scene_stats["scene_count"]} cảnh ngoài '
+                f'khoảng {scene_stats["min_seconds"]:g}–{scene_stats["max_seconds"]:g} giây; '
+                'giữ ranh giới cue/hội thoại sạch, không cắt ngang hoặc kéo dài để ép thời lượng. '
+                'Chi tiết nguồn và thời lượng được lưu trong kế hoạch cảnh.')
     contract_check(candidate)
     check()
     return candidate

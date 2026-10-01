@@ -446,6 +446,19 @@ def test_all_job_progress_stays_monotonic_across_stages():
     assert history[-1] == 99
 
 
+def test_scene_duration_batch_settings_are_saved_with_per_row_override(database):
+    common = settings()
+    common.update(editorial_mode='reaction_cops', reaction_scene_duration_mode='range',
+                  reaction_scene_min_seconds=10, reaction_scene_max_seconds=20)
+    batch = batches.create('Scene durations', [{'url':URL_A}, {'url':URL_B,
+                             'settings':{'reaction_scene_min_seconds':6,'reaction_scene_max_seconds':12}}], common)
+    first = store.read(batch['items'][0]['project_id'])['settings']
+    second = store.read(batch['items'][1]['project_id'])['settings']
+    assert first['reaction_scene_duration_mode'] == second['reaction_scene_duration_mode'] == 'range'
+    assert (first['reaction_scene_min_seconds'],first['reaction_scene_max_seconds']) == (10,20)
+    assert (second['reaction_scene_min_seconds'],second['reaction_scene_max_seconds']) == (6,12)
+
+
 def test_excel_template_roundtrip_and_api(database):
     client = TestClient(app)
     response = client.get('/api/batches/template')
@@ -453,14 +466,17 @@ def test_excel_template_roundtrip_and_api(database):
     rows = batches.parse_excel(response.content)
     assert rows[0]['url'] == URL_A
     assert rows[0]['settings']['summary_seconds'] == 180
+    assert rows[0]['settings']['reaction_scene_duration_mode'] == 'auto'
     workbook = Workbook()
     sheet = workbook.active
-    sheet.append(['url', 'title', 'summary_minutes', 'hook_enabled', 'hook_duration'])
-    sheet.append([URL_B, 'Second', 2, True, 5.5])
+    sheet.append(['url', 'title', 'summary_minutes', 'hook_enabled', 'hook_duration',
+                  'reaction_scene_duration_mode', 'reaction_scene_min_seconds', 'reaction_scene_max_seconds'])
+    sheet.append([URL_B, 'Second', 2, True, 5.5, 'range', 8, 18])
     output = BytesIO()
     workbook.save(output)
     imported = client.post('/api/batches/import-excel', files={'file': ('links.xlsx', output.getvalue())},
                            headers={'X-AIR3view': 'studio'})
     assert imported.status_code == 200
     assert imported.json()[0]['settings'] == {'summary_seconds': 120, 'hook_enabled': True,
-                                              'hook_duration': 5.5}
+                                              'hook_duration': 5.5, 'reaction_scene_duration_mode': 'range',
+                                              'reaction_scene_min_seconds': 8, 'reaction_scene_max_seconds':18}

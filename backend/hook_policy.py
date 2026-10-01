@@ -71,7 +71,9 @@ def prepare_hook(proposed, project):
 
 def slots(plan):
     """Uniform source-time slots for TTS/contracts, separate from story geometry."""
-    result=list(plan.get('selections',[]))
+    from .reaction_commentary import slot
+    result=[slot(plan, i) if row.get('commentary_span', 1) > 1 else row
+            for i, row in enumerate(plan.get('selections', []))]
     hook=plan.get('hook',{})
     if not hook.get('original_audio',True) and hook.get('narration','').strip():
         result.insert(0,dict(id='hook',start=hook['start'],end=hook['end'],part=1,section='hook',

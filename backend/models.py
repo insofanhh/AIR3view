@@ -1,6 +1,6 @@
 from pathlib import Path
 from typing import Literal
-from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator, model_serializer
 
 
 class Model(BaseModel):
@@ -121,6 +121,9 @@ class Settings(Model):
     editorial_mode: Literal['standard', 'reaction_cops'] = 'standard'
     original_dialogue_ratio: float = Field(default=.15, ge=.1, le=1)
     reaction_commentary_count: int = Field(default=5, ge=1, le=10)
+    reaction_scene_duration_mode: Literal['auto', 'range'] = 'auto'
+    reaction_scene_min_seconds: float = Field(default=10, ge=1, le=25)
+    reaction_scene_max_seconds: float = Field(default=20, ge=1, le=25)
     analysis_workflow: Literal['efficient', 'detailed'] = 'efficient'
     production_workflow: Literal['plan_first', 'legacy'] = 'legacy'
     duration_min_ratio: float = Field(default=.9, ge=.6, le=1)
@@ -132,6 +135,9 @@ class Settings(Model):
 
     @model_validator(mode='after')
     def validate_settings(self):
+        if (self.reaction_scene_duration_mode == 'range' and
+                self.reaction_scene_min_seconds > self.reaction_scene_max_seconds):
+            raise ValueError('Thời lượng cảnh tối thiểu không được lớn hơn tối đa.')
         if any(x < 1 or x > 1800 for x in self.part_durations):
             raise ValueError('Độ dài phần thủ công phải từ 1 đến 1800 giây.')
         return self
@@ -200,6 +206,14 @@ class StorySelection(Model):
     narration: str
     narration_offset: float = Field(ge=0)
     evidence: str = Field(min_length=1)
+    commentary_span: int = Field(default=1, ge=1, le=500)
+
+    @model_serializer(mode='wrap')
+    def serialize(self, handler):
+        result = handler(self)
+        if self.commentary_span == 1:
+            result.pop('commentary_span', None)
+        return result
 
 
 class StoryAnswer(Model):

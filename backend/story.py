@@ -173,6 +173,11 @@ def duration_plan_manifest(result, project):
                       'source_duration': source_duration,
                       'voice_target': round(max(0, source_duration - .04), 3)
                       if item.get('narration', '').strip() else 0})
+        if item.get('source_ranges'):
+            slots[-1].update(source_ranges=item['source_ranges'],
+                             source_end=item['source_ranges'][-1]['end'],
+                             commentary_span=item['commentary_span'],
+                             timing_basis='sum_of_output_cuts')
     return {'version': 1, 'mode': 'duration-first', 'target': stats['target'],
             'requested_target': output_budget(project['settings'], stats['source'])[1],
             'minimum': stats['minimum'], 'source': stats['source'],
@@ -315,6 +320,9 @@ def plan_fingerprint(project):
     names += ['summary_seconds'] if s.get('output_mode') == 'single' else ['part_count', 'part_seconds']
     if reaction_cops(s):
         names += ['narration_style', 'reaction_commentary_count']
+        if s.get('reaction_scene_duration_mode') == 'range':
+            names += ['reaction_scene_duration_mode', 'reaction_scene_min_seconds',
+                      'reaction_scene_max_seconds']
     elif storytelling(s):
         names += ['narration_style', 'original_dialogue_ratio']
     else:
@@ -332,6 +340,9 @@ def plan_fingerprint(project):
     if reaction_cops(s):
         from .reaction_cops import VERSION as REACTION_VERSION
         payload['reaction_cops_version'] = REACTION_VERSION
+        if s.get('reaction_scene_duration_mode') == 'range':
+            from .reaction_commentary import VERSION as WINDOW_VERSION
+            payload['reaction_commentary_window_version'] = WINDOW_VERSION
     if workflow == 'plan_first':
         payload['evidence'] = project.get('scenes', [])
         payload['summary'] = project.get('summary', '')
@@ -361,6 +372,8 @@ def validate_plan(result, project, *, check_text=True):
         from .reaction_cops import validate_plan as validate_reaction_plan
         return validate_reaction_plan(result, project, check_text=check_text)
     if isinstance(result, dict) and isinstance(result.get('selections'), list):
+        if any(x.get('commentary_span', 1) != 1 for x in result['selections'] if isinstance(x, dict)):
+            raise ValueError('Cửa sổ commentary nhiều cảnh chỉ dùng cho Reaction COPS.')
         result = copy.deepcopy(result)
         for selection in result['selections']:
             if isinstance(selection, dict):

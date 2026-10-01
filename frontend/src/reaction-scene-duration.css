@@ -1,0 +1,7 @@
+.reaction-scene-duration { min-width: 0; margin: 15px 0; padding: 12px; border: 1px solid var(--line); border-radius: 7px; }
+.reaction-scene-duration legend { font-size: 11px; color: #b9d98c; padding: 0 5px; }
+.reaction-scene-duration label { display: flex; flex-direction: column; gap: 7px; font-size: 10px; color: #a9bac2; margin: 8px 0; }
+.reaction-scene-duration-pair { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.reaction-scene-duration p { font-size: 10px; color: var(--muted); line-height: 1.7; margin-top: 9px; }
+.batch-settings > .reaction-scene-duration { grid-column: 1 / -1; }
+@media(max-width:360px) { .reaction-scene-duration-pair { grid-template-columns: 1fr; } }

@@ -59,7 +59,10 @@ def budget(plan,project):
     from .story_bridges import reserve_seconds
     structural_reserve=reserve_seconds(plan,project)
     feasible=min(requested,available,max(0,total-(hook-hook_original)-structural_reserve))
-    actual=hook_original+sum(c['end']-c['start'] for c in plan['selections'] if not c['narration'].strip())
+    from .reaction_commentary import members
+    covered = {id(row) for i, item in enumerate(plan['selections']) if item['narration'].strip()
+               for row in members(plan, i)}
+    actual=hook_original+sum(c['end']-c['start'] for c in plan['selections'] if id(c) not in covered)
     return dict(requested_ratio=project['settings'].get('original_dialogue_ratio',.15),total_seconds=round(total,3),
                 requested_seconds=round(requested,3),available_seconds=round(available,3),
                 effective_seconds=round(feasible,3),actual_seconds=round(actual,3),

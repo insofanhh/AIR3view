@@ -45,6 +45,9 @@ def repair_existing(project, report, check):
     from . import store
     from .story import plan_is_current, validate_plan, storytelling
     from .providers import voice_hash
+    if (project['settings'].get('editorial_mode') == 'reaction_cops' and
+            project['settings'].get('reaction_scene_duration_mode') == 'range'):
+        return project  # Multi-cut windows are already locked independently of visual cuts.
     if not storytelling(project['settings']) or not plan_is_current(project):
         return project
     # Work on a copy; failed validation must never publish a partial edit.

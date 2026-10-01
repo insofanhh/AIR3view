@@ -10,6 +10,139 @@ from backend.reaction_cops import (_planner_catalog, _clean_footage, _effective_
                                    commentary_word_limit, repair_commentary_for_voice)
 from backend.timeline import build_story
 from backend.voice_repair import source_evidence
+from backend.reaction_scene_duration import limits as scene_limits, instructions as scene_instructions, audit as scene_audit
+
+
+def scene_project(lengths, gap=0, texts=None):
+    settings = Settings(output_mode='single', summary_seconds=sum(lengths) + gap * (len(lengths) - 1),
+                        production_workflow='plan_first', narration_style='storytelling',
+                        editorial_mode='reaction_cops', reaction_scene_duration_mode='range',
+                        reaction_commentary_count=2).model_dump()
+    cues, roles = [], []
+    start = 0
+    for i, length in enumerate(lengths):
+        cue = dict(id=str(i), start=start, end=start+length,
+                   text=texts[i] if texts else f'Confirmed statement {i}.', source_cue_ids=[str(i)])
+        cues.append(cue)
+        roles.append(dict(cue=i, start=cue['start'], end=cue['end'], text=cue['text'],
+                          role='participant', confidence=.9, priority=.8, evidence='real exchange', hook_score=0))
+        start = cue['end'] + gap
+    return {'settings': settings, 'metadata': {'duration': cues[-1]['end'], 'has_audio': True},
+            'reaction_cues': cues, 'source_speech': {'version':3, 'items':roles},
+            'transcript': cues, 'source': {}, 'narrations': []}
+
+
+def test_scene_range_balances_whole_cues_instead_of_leaving_tiny_tail():
+    project = scene_project([12, 12, 4])
+    blocks = _clean_footage(project)
+    assert [(b['start'], b['end']) for b in blocks] == [(0,12), (12,28)]
+    assert [i for b in blocks for i in b['source_cue_ids']] == ['0','1','2']
+
+
+def test_scene_range_keeps_question_with_answer_even_outside_preference():
+    project = scene_project([12, 12], texts=['What happened?', 'He explained what happened.'])
+    blocks = _clean_footage(project)
+    assert len(blocks) == 1 and blocks[0]['end'] == 24
+    report = scene_audit([{**blocks[0], 'id':'sel0'}], project['settings'])
+    assert report['within_range'] == 0
+    assert report['exceptions'][0]['reason'] == 'long'
+    assert report['exceptions'][0]['source_end'] == 24
+
+
+@pytest.mark.parametrize('role', ['commentary', 'unknown'])
+def test_scene_range_does_not_merge_across_excluded_speech(role):
+    project = scene_project([6, 1, 6])
+    project['source_speech']['items'][1]['role'] = role
+    blocks = _clean_footage(project)
+    assert [b['source_cue_ids'] for b in blocks] == [['0'], ['2']]
+
+
+def test_scene_range_allows_short_context_gap_but_not_long_wait():
+    close = _clean_footage(scene_project([6,6], gap=.8))
+    far = _clean_footage(scene_project([6,6], gap=2))
+    assert len(close) == 1 and close[0]['end'] == 12.8
+    assert len(far) == 2
+
+
+def test_scene_range_overlapping_cues_have_no_duplicate_or_partial_footage():
+    project = scene_project([12,12,4])
+    project['reaction_cues'][1]['start'] = 10
+    project['source_speech']['items'][1]['start'] = 10
+    blocks = _clean_footage(project)
+    assert [(b['start'], b['end']) for b in blocks] == [(0,24), (24,28)]
+    assert [i for b in blocks for i in b['source_cue_ids']] == ['0','1','2']
+
+
+def test_scene_range_preserves_long_original_exchange_without_extra_commentary():
+    project = scene_project([10,16,16,10],
+                            texts=['Initial statement.', 'Why did it happen?', 'Here is my answer.', 'Final statement.'])
+    blocks = _clean_footage(project)
+    hook = dict(start=0,end=0,title='',reason='Off',original_audio=False,narration='')
+    budget = _effective_duration(project, blocks, hook)
+    project['reaction_duration_budget'] = budget
+    draft = {'title':'Reaction','selections':[]}
+    accepted = validate_plan(_fill_from_full_source(project,draft,blocks,hook,budget), project,check_text=False)
+    assert sum(bool(b['narration']) for b in accepted['selections']) == 2
+    assert all(b['end']-b['start']<=25 for b in accepted['selections'] if b['narration'])
+    assert any(b['end']-b['start']==32 and not b['narration'] for b in accepted['selections'])
+
+
+def test_scene_range_rolling_caption_chain_does_not_become_one_long_scene():
+    project = scene_project([4]*80)
+    project['transcript_origin'] = 'youtube_auto_subtitles'
+    for i, (cue, role) in enumerate(zip(project['reaction_cues'], project['source_speech']['items'])):
+        cue.update(start=i*2, end=i*2+4)
+        role.update(start=cue['start'], end=cue['end'])
+    project['metadata']['duration'] = 162
+    blocks = _clean_footage(project)
+    assert len(blocks) > 3
+    assert all(1 <= b['end'] - b['start'] <= 20 for b in blocks)
+    assert all(a['end'] <= b['start'] + .04 for a,b in zip(blocks,blocks[1:]))
+    by_id = {c['id']:c for c in project['reaction_cues']}
+    assert all(b['start'] <= by_id[i]['start'] and by_id[i]['end'] <= b['end']
+               for b in blocks for i in b['source_cue_ids'])
+
+
+def test_auto_scene_mode_and_standard_mode_keep_existing_fingerprint():
+    from backend.story import plan_fingerprint
+    project = scene_project([10,10,10])
+    project['settings']['reaction_scene_duration_mode'] = 'auto'
+    original = plan_fingerprint(project)
+    blocks = _clean_footage(project)
+    for key in ('reaction_scene_duration_mode','reaction_scene_min_seconds','reaction_scene_max_seconds'):
+        project['settings'].pop(key)
+    assert plan_fingerprint(project) == original
+    assert _clean_footage(project) == blocks
+    assert scene_instructions(project['settings']) == ''
+    project['settings']['reaction_scene_duration_mode'] = 'range'
+    assert plan_fingerprint(project) != original
+    ranged = plan_fingerprint(project)
+    project['settings']['reaction_scene_max_seconds'] = 15
+    assert plan_fingerprint(project) != ranged
+    project['settings']['editorial_mode'] = 'standard'
+    standard = plan_fingerprint(project)
+    project['settings']['reaction_scene_min_seconds'] = 4
+    assert plan_fingerprint(project) == standard
+    assert scene_limits(project['settings']) is None
+
+
+def test_scene_settings_validate_bounds_and_range_order():
+    with pytest.raises(ValueError,match='tối thiểu'):
+        Settings(reaction_scene_duration_mode='range', reaction_scene_min_seconds=21, reaction_scene_max_seconds=10)
+    for key in ('reaction_scene_min_seconds','reaction_scene_max_seconds'):
+        with pytest.raises(ValueError):
+            Settings(**{key:26})
+        with pytest.raises(ValueError):
+            Settings(**{key:.5})
+        assert getattr(Settings(**{key:1}), key) == 1
+
+
+def test_scene_range_accepts_one_second_complete_cues():
+    project = scene_project([1, 1, 1])
+    project['settings'].update(reaction_scene_min_seconds=1, reaction_scene_max_seconds=1)
+    blocks = _clean_footage(project)
+    assert [(b['start'], b['end']) for b in blocks] == [(0, 1), (1, 2), (2, 3)]
+    assert 'prefer 1–1 seconds' in scene_instructions(project['settings'])
 
 
 def fixture():
@@ -214,11 +347,14 @@ def test_duration_repair_receives_only_cited_in_scene_evidence():
     assert 'later arrest' not in evidence
 
 
-def test_reaction_plan_first_pipeline_keeps_hook_off_and_only_eligible_cues(monkeypatch,tmp_path):
+@pytest.mark.parametrize('scene_mode,scene_min', [('auto',10), ('range',10), ('range',15)])
+def test_reaction_plan_first_pipeline_keeps_hook_off_and_only_eligible_cues(monkeypatch,tmp_path,scene_mode,scene_min):
     from backend import providers, store
     from backend.reaction_cops import plan_reaction
     project, _ = fixture()
     project['settings']['reaction_commentary_count']=5
+    project['settings']['reaction_scene_duration_mode'] = scene_mode
+    project['settings']['reaction_scene_min_seconds'] = scene_min
     project.update(id='reaction-test',source='fixture.mp4',summary='Unverified narrator claim',
                    scenes=[],hooks=[],exports=[],preview_exports=[],warnings=[])
     project['voice_repair_state'] = {'story-sel0': {'approved_text': 'Old copied dialogue'}}
@@ -253,14 +389,26 @@ def test_reaction_plan_first_pipeline_keeps_hook_off_and_only_eligible_cues(monk
     result=plan_reaction(project,lambda *_:None,lambda:None)
     assert result['story_plan']['hook']['end']==0
     assert result['settings']['hook_enabled'] is False
-    assert len(result['narrations'])==3
+    expected_points = 3
+    assert len(result['narrations'])==expected_points
     assert result['duration_plan']['status']=='ready'
     assert len(plan_calls)==2
     assert 'Request 5 distinct commentary points' in next(p for name,p in seen if name=='ReactionFootagePlan')
     assert result['duration_plan']['reaction_budget']['requested_commentary_count']==5
-    assert result['duration_plan']['reaction_budget']['actual_commentary_count']==3
+    assert result['duration_plan']['reaction_budget']['actual_commentary_count']==expected_points
     assert result['voice_repair_state'] == {}
-    assert any('3/5 commentary points' in warning for warning in result['warnings'])
+    assert any(f'{expected_points}/5 commentary points' in warning for warning in result['warnings'])
+    if scene_mode == 'range':
+        stats = result['duration_plan']['reaction_scene_duration']
+        assert stats['within_range'] == (3 if scene_min == 10 else 0)
+        assert f'OPTIONAL SCENE DURATION: prefer {scene_min}–20' in next(p for name,p in seen if name=='ReactionFootagePlan')
+        assert f'OPTIONAL SCENE DURATION: prefer {scene_min}–20' in next(p for name,p in seen if name=='ScheduledNarration')
+        if scene_min == 15:
+            assert len(stats['exceptions']) == 3
+            assert any('3/3 cảnh ngoài khoảng' in w for w in result['warnings'])
+    else:
+        assert 'reaction_scene_duration' not in result['duration_plan']
+        assert 'OPTIONAL SCENE DURATION' not in next(p for name,p in seen if name=='ReactionFootagePlan')
     assert 'Unverified narrator claim' not in next(p for name,p in seen if name=='ReactionFootagePlan')
     assert 'Unverified narrator claim' not in next(p for name,p in seen if name=='ScheduledNarration')
 
