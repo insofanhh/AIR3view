@@ -17,6 +17,10 @@ def repair_language(project, report, check):
     from . import providers, store
     if project['settings'].get('editorial_mode') == 'reaction_cops':
         from .reaction_cops import RULE, commentary_violation
+        from .reaction_review import active as review_active, RULE as REVIEW_RULE, quality_issue
+        if review_active(project['settings']):
+            RULE = REVIEW_RULE
+            commentary_violation = quality_issue
     else:
         from .source_policy import RULE
         commentary_violation = lambda _text: None
@@ -25,6 +29,8 @@ def repair_language(project, report, check):
     from .story import speech_rate, speech_units
     language = project['settings']['language']
     pending = [n for n in project['narrations'] if n['enabled'] and wrong_language(n['text'], language)]
+    if any(n.get('speech_kind') == 'dialogue' for n in pending):
+        raise ValueError('Lồng tiếng nhân vật chưa đúng ngôn ngữ; phân tích lại để dịch và kiểm tra từng lượt thoại, không đổi thành commentary.')
     if not pending:
         return project
     import json, math

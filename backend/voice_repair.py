@@ -107,6 +107,7 @@ def restore_perspective(project,only_id=None):
     from .hook_policy import set_text
     changed=False
     for n in project.get('narrations',[]):
+        if n.get('speech_kind') == 'dialogue':continue
         if not n['enabled'] or (only_id is not None and n['id']!=only_id) or n.get('audio'):continue
         state=project.get('voice_repair_state',{}).get(n['id'],{})
         history=state.get('history',[])
@@ -145,7 +146,10 @@ def reaction_tail_gap(settings: dict, target: float) -> float:
     if (settings.get('editorial_mode') != 'reaction_cops' or
             settings.get('production_workflow', 'plan_first') != 'plan_first' or target <= 0):
         return 0
-    if settings.get('reaction_scene_duration_mode') == 'range':
+    from .reaction_review import active as review_active
+    if review_active(settings):
+        return min(.4,target*.05)
+    if settings.get('reaction_scene_duration_mode') == 'range' or settings.get('reaction_audio_mode') == 'dubbed':
         # A window is a ceiling across cuts, not a requirement to fill with words.
         return target
     return min(1.25, target * .2) if target <= 8.5 else min(3.5, target * .25)
@@ -272,7 +276,12 @@ def repair_text(text: str, evidence: str, language: str, target: float,
             cited = []
         source_text = ' '.join(str(row.get('text', '')) for row in cited if isinstance(row, dict))
         def commentary_violation(candidate):
-            return commentary_quality_issue(candidate, source_text, target, language)
+            from .reaction_review import active as review_active, quality_issue
+            return (quality_issue(candidate,source_text,target,language) if review_active(settings)
+                    else commentary_quality_issue(candidate, source_text, target, language))
+        from .reaction_review import active as review_active, RULE as REVIEW_RULE
+        if review_active(settings):
+            RULE = REVIEW_RULE
     else:
         from .source_policy import RULE
         commentary_violation = lambda _text: None

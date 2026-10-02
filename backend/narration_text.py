@@ -31,6 +31,9 @@ def prepare_clean_narration(project, only_id=None):
     """Invalidate audio only when spoken text changes; keep original transcript."""
     edited=None
     for i,n in enumerate(project.get('narrations',[])):
+        if n.get('speech_kind') == 'dialogue':
+            # Times/numbers spoken by a character are source evidence, not editorial citations.
+            continue
         if not n['enabled'] or (only_id is not None and n['id']!=only_id):
             continue
         clean=clean_narration(n['text'])

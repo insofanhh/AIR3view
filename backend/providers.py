@@ -506,6 +506,11 @@ def localize(project, report, check):
     """Translate text without changing timing; retain original transcript for re-analysis."""
     settings = project['settings']
     language = settings['language']
+    from .reaction_dubbing import active as dubbing_active
+    from .reaction_review import active as review_active
+    dubbed = dubbing_active(settings) or review_active(settings)
+    if dubbed and project.get('script_language') != language and project.get('narrations'):
+        raise ValueError('Đổi ngôn ngữ lồng tiếng cần phân tích lại để giữ ánh xạ và kiểm tra từng lượt nhân vật.')
     if language == 'Auto':
         raise ValueError('Chọn ngôn ngữ đầu ra cụ thể trước khi chuyển ngôn ngữ.')
     entries = []
@@ -530,10 +535,10 @@ def localize(project, report, check):
             transcript_language = 'English'
         elif source_name.startswith(('captions.vi.', 'captions.vi-')):
             transcript_language = 'Vietnamese'
-    if transcript_language != language:
+    if transcript_language != language and not dubbed:
         for i, c in enumerate(project['transcript']):
             add(f'c{i}', c, 'text')
-    reaction_cues = project.get('reaction_cues', []) if settings.get('editorial_mode') == 'reaction_cops' else []
+    reaction_cues = project.get('reaction_cues', []) if settings.get('editorial_mode') == 'reaction_cops' and not dubbed else []
     reaction_signature = reaction_caption_signature(reaction_cues) if reaction_cues else ''
     roles = project.get('source_speech', {}).get('items', [])
     verified = [(i, cue) for i, cue in enumerate(reaction_cues)
@@ -606,7 +611,12 @@ def voice_hash(narration, settings):
     synthesis['voice_volume'] = 1.0
     if settings.get('production_workflow') == 'plan_first':
         synthesis['timing_policy'] = 'consistent-pace-v1'
+        from .reaction_review import active as review_active, VERSION as REVIEW_VERSION
+        if review_active(settings):
+            synthesis['timing_policy'] = f'full-review-fixed-pace-{REVIEW_VERSION}'
     payload = {'text': narration['text'], 'settings': synthesis}
+    if narration.get('speech_kind') == 'dialogue':
+        payload['dialogue_captions'] = {'version':1, 'turns':narration['turns']}
     if narration.get('target_duration', 0) > 0:
         payload['target_duration'] = narration['target_duration']
         payload['timing_version'] = 1
@@ -657,16 +667,16 @@ def _request_voice_audio(client, params, endpoint, report, check, progress, labe
     return Path(audio)
 
 
-def generate_voice_audio(client, params, endpoint, destination, report, check, progress, label, target_duration=0, speed=1, engine='OmniVoice', stable_speed=None, tail_gap=0):
+def generate_voice_audio(client, params, endpoint, destination, report, check, progress, label, target_duration=0, speed=1, engine='OmniVoice', stable_speed=None, tail_gap=0, exact_speed=False):
     from .media import run, FFMPEG
     # Generate once. Repeating the same text cannot fix a deterministic
     # duration error; the caller's bounded loop rewrites only this narration.
     audio = _request_voice_audio(client, params, endpoint, report, check, progress, label, engine)
-    return fit_voice_audio(audio,destination,check,target_duration,speed,engine,stable_speed,tail_gap=tail_gap)
+    return fit_voice_audio(audio,destination,check,target_duration,speed,engine,stable_speed,tail_gap=tail_gap,exact_speed=exact_speed)
 
 
 def fit_voice_audio(audio,destination,check,target_duration=0,speed=1,engine='OmniVoice',stable_speed=None,
-                    tail_gap=0):
+                    tail_gap=0, exact_speed=False):
     from .media import run, FFMPEG
     measured = probe(audio)['duration']
     if measured <= 0:
@@ -676,7 +686,7 @@ def fit_voice_audio(audio,destination,check,target_duration=0,speed=1,engine='Om
         # VieNeu needs the global speed applied locally; OmniVoice received
         # sp already. Only +/-5% around that fixed pace is permitted.
         lower, upper = .95*stable_speed, 1.05*stable_speed
-        if target_duration and tail_gap >= target_duration:
+        if exact_speed or target_duration and tail_gap >= target_duration:
             lower = upper = stable_speed
     if target_duration and (measured / target_duration > upper or
             (measured / target_duration < lower and target_duration-measured/lower > tail_gap)):
@@ -687,7 +697,7 @@ def fit_voice_audio(audio,destination,check,target_duration=0,speed=1,engine='Om
     if target_duration:
         # Keep the narrator within the fixed pace band. A brief unvoiced tail
         # leaves room for source ambience instead of inventing filler words.
-        factor = (stable_speed if stable_speed is not None and tail_gap >= target_duration
+        factor = (stable_speed if stable_speed is not None and (exact_speed or tail_gap >= target_duration)
                   else max(lower, measured / target_duration) if tail_gap else measured / target_duration)
         args += ['-af', f'atempo={factor:.8f}']
     elif speed != 1:
@@ -779,9 +789,12 @@ def synthesize(project, report, check, only_id=None):
             report(100,'Bản dựng dùng tiếng gốc; không cần tạo giọng AI.')
             return project
         raise ValueError('Chưa có lời dẫn. Phân tích AI hoặc thêm một đoạn lời dẫn trước.')
-    if settings.get('editorial_mode') == 'reaction_cops':
+    from .reaction_review import active as review_active
+    full_review = review_active(settings)
+    if settings.get('editorial_mode') == 'reaction_cops' and not full_review:
         from .reaction_cops import repair_commentary_for_voice
         for narration in pending:
+            if narration.get('speech_kind') == 'dialogue':continue
             check()
             repair_commentary_for_voice(project, narration, ask_ai, folder, report, check)
     client = None
@@ -816,7 +829,7 @@ def synthesize(project, report, check, only_id=None):
                     if settings.get('production_workflow')=='plan_first' and raw_cached.is_file():
                         fit_metrics=fit_voice_audio(raw_cached,destination,check,target,settings['voice_speed'],engine,
                                                     settings['voice_speed'] if engine=='VieNeu' else 1,
-                                                    tail_gap=reaction_tail_gap(settings,target))
+                                                    tail_gap=reaction_tail_gap(settings,target),exact_speed=full_review)
                         break
                     report(5 + 80 * i / len(pending), f'{engine} tạo giọng {i+1}/{len(pending)}…')
                     if engine == 'VieNeu':
@@ -826,11 +839,13 @@ def synthesize(project, report, check, only_id=None):
                         fit_metrics = fit_voice_audio(audio, destination, check,
                                              target_duration=target, speed=settings['voice_speed'], engine='VieNeu',
                                              **({'stable_speed':settings['voice_speed']} if settings.get('production_workflow')=='plan_first' else {}),
-                                             tail_gap=reaction_tail_gap(settings,target))
+                                             tail_gap=reaction_tail_gap(settings,target),exact_speed=full_review)
                     else:
                         if client is None:
                             client = Client(settings['omnivoice_url'], verbose=False, download_files=str(folder / 'voice-downloads'))
                         common = dict(text=narration['text'], lang=settings['language'], ns=settings['voice_steps'], gs=2, dn=True, sp=settings['voice_speed'], du=target or None, pp=True, po=not bool(target))
+                        if (narration.get('speech_kind') == 'dialogue' or full_review) and settings.get('production_workflow') == 'plan_first':
+                            common.update(du=None,po=True)  # Natural pace; repair words, not the speaker's delivery.
                         if settings['voice_mode'] == 'clone':
                             if not settings['voice_reference']:
                                 raise ValueError('Chọn audio giọng mẫu trước khi dùng chế độ giọng tham chiếu.')
@@ -846,7 +861,7 @@ def synthesize(project, report, check, only_id=None):
                         fit_metrics = generate_voice_audio(client, common, '/_clone_fn', destination, report,
                                              check, 5 + 80 * i / len(pending), f'OmniVoice {i+1}/{len(pending)}', target_duration=target,
                                              **({'stable_speed':1} if settings.get('production_workflow')=='plan_first' else {}),
-                                             tail_gap=reaction_tail_gap(settings,target))
+                                             tail_gap=reaction_tail_gap(settings,target),exact_speed=full_review)
                 break
             except DurationMismatchError as mismatch:
                 # Older hand-authored narrations may lack evidence/segment_id;
@@ -898,7 +913,17 @@ def synthesize(project, report, check, only_id=None):
                 store.save(project)
                 report(5 + 80 * i / len(pending), f'{engine} sửa lời kể đoạn {i+1}, lượt {repairs}/{repair_budget.max_per_narration}…')
                 try:
-                    rewritten = repair_text(narration['text'], source_evidence(project,narration),
+                    if narration.get('speech_kind') == 'dialogue':
+                        from .reaction_dubbing import repair as repair_dialogue, apply_turns
+                        rewritten, turns = repair_dialogue(project,narration,target,mismatch.measured,
+                                                            ask_ai,folder,check,generation)
+                        apply_turns(project,narration,turns)
+                    elif full_review:
+                        from .reaction_review import repair_voice
+                        rewritten = repair_voice(project,narration,target,mismatch.measured,ask_ai,folder,check,
+                                                 generation,state['history'])
+                    else:
+                        rewritten = repair_text(narration['text'], source_evidence(project,narration),
                                             settings['language'], target, mismatch.measured,
                                             settings, folder, check, ask_ai,
                                             generation=generation,
@@ -937,6 +962,11 @@ def synthesize(project, report, check, only_id=None):
             project['warnings'].append('Không nhận dạng được mốc từ cho ' + narration['id'] + '; phụ đề hiển thị theo cả câu, cần kiểm tra.')
         for cue in cues:
             cue['speaker'] = 'ai'
+        if narration.get('speech_kind') == 'dialogue':
+            from .reaction_dubbing import captions as dialogue_captions
+            cues, aligned_turns = dialogue_captions(narration,cues,duration)
+            if not aligned_turns:
+                project.setdefault('warnings',[]).append('Lồng tiếng '+narration['id']+': chưa có mốc cụm từ đủ tin cậy; phụ đề hiển thị cả lượt thoại theo thời gian WAV.')
         narration.update(audio=f'voices/{destination.name}', audio_hash=fingerprint, duration=duration, cues=cues, caption_version=4)
         store.save(project)
     project['exports'] = []

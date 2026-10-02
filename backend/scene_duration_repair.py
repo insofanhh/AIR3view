@@ -53,6 +53,11 @@ def adjust(project,narration,measured,target,diagnostics=None):
     from .retention import budget
     def reject(reason):
         if diagnostics is not None and reason not in diagnostics:diagnostics.append(reason)
+    from .reaction_dubbing import active as dubbing_active
+    from .reaction_review import active as review_active
+    if dubbing_active(project['settings']) or review_active(project['settings']):
+        reject('Giữ lịch cảnh/hội thoại đã khóa; sửa riêng lời lồng tiếng hoặc commentary, không chiếm cảnh của lượt nói khác.')
+        return None
     if (project['settings'].get('production_workflow')!='plan_first' or not project.get('story_plan')
             or not project['settings'].get('output_mode') or not math.isfinite(measured) or measured<=0):return None
     sid=narration.get('segment_id');rows=project['story_plan']['selections']

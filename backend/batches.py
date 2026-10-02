@@ -95,6 +95,9 @@ def validate_items(items):
             overrides = row.get('settings') or {}
             if not isinstance(overrides, dict) or set(overrides) - set(Settings.model_fields):
                 raise ValueError('Cột cấu hình video không hợp lệ.')
+            from .music import ASSET_FIELDS
+            if set(overrides) & ASSET_FIELDS:
+                raise ValueError('Chọn nhạc nền qua cấu hình chung, không nhập đường dẫn trong từng dòng.')
             if 'voice_reference' in overrides:
                 raise ValueError('Chọn giọng mẫu qua cấu hình chung, không nhập đường dẫn trong từng dòng.')
             result.append({'url': url, 'title': title, 'settings': overrides, 'position': position})
@@ -183,10 +186,20 @@ def staged_reference(token):
     return path
 
 
-def create(name, items, settings, source_project_id=None, reference_token=None):
+def create(name, items, settings, source_project_id=None, reference_token=None, music_token=None):
     rows = validate_items(items)
     base = Settings.model_validate(settings).model_dump()
     source = store.read(source_project_id) if source_project_id else None
+    from . import music
+    background_music = None
+    if music_token:
+        background_music, music_metadata = music.staged(music_token)
+        base.update(music_metadata)
+    elif base['music_file']:
+        if not source or base['music_file'] != source['settings'].get('music_file'):
+            raise ValueError('Nhạc nền cần file tải lên hoặc dự án nguồn tương ứng để sao chép an toàn.')
+        background_music = music.project_asset(source)
+        base.update({key: source['settings'].get(key, base[key]) for key in music.ASSET_FIELDS})
     if reference_token and base['voice_mode'] != 'clone':
         raise ValueError('Chỉ dùng giọng mẫu khi đã chọn Theo giọng mẫu.')
     if base['voice_reference'] and not source and not reference_token:
@@ -227,6 +240,12 @@ def create(name, items, settings, source_project_id=None, reference_token=None):
                 else:
                     snapshot['voice_reference'] = ''
                 project['settings'] = snapshot
+                if background_music:
+                    target = store.asset(project['id'], background_music.name)
+                    shutil.copyfile(background_music, target)
+                    snapshot['music_file'] = target.name
+                else:
+                    snapshot.update(music_file='', music_name='', music_duration=0)
                 project['batch_id'] = batch_id
                 project['batch_position'] = row['position']
                 store.save(project)  # Do not promote batch settings into user defaults.

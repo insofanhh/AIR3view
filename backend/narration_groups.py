@@ -46,7 +46,9 @@ def repair_existing(project, report, check):
     from .story import plan_is_current, validate_plan, storytelling
     from .providers import voice_hash
     if (project['settings'].get('editorial_mode') == 'reaction_cops' and
-            project['settings'].get('reaction_scene_duration_mode') == 'range'):
+            (project['settings'].get('reaction_commentary_count',5) == 0 or
+             project['settings'].get('reaction_scene_duration_mode') == 'range' or
+             project['settings'].get('reaction_audio_mode') == 'dubbed')):
         return project  # Multi-cut windows are already locked independently of visual cuts.
     if not storytelling(project['settings']) or not plan_is_current(project):
         return project

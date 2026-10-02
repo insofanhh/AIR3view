@@ -76,11 +76,15 @@ def _openai_plan_context(project):
 
 
 def geometry(plan):
-    return {'hook': {k: plan['hook'][k] for k in ('start', 'end')} | ({'original_audio':False} if not plan['hook'].get('original_audio',True) else {}),
+    result = {'hook': {k: plan['hook'][k] for k in ('start', 'end')} | ({'original_audio':False} if not plan['hook'].get('original_audio',True) else {}),
             'selections': [{k: x[k] for k in ('id','start','end','part','section','narration_offset')}
                            | {'voiced': bool(x['narration'].strip())}
                            | ({'commentary_span': x['commentary_span']} if x.get('commentary_span', 1) > 1 else {})
                            for x in plan['selections']]}
+    dubs = plan.get('dialogue_dubs', []) + ([plan['hook_dub']] if plan.get('hook_dub') else [])
+    if dubs:
+        result['dialogue_windows'] = [{k:x[k] for k in ('id','selection_ids','start','end','part','timed_turns')} for x in dubs]
+    return result
 
 
 def lock_schedule(raw, project, report):
@@ -164,6 +168,9 @@ def contract_check(project):
             or not project.get('story_plan')):
         raise ValueError('Kế hoạch thời lượng chưa sẵn sàng hoặc đã thay đổi. Chạy phân tích để khóa lịch trước khi tạo giọng.')
     validated = validate_plan(project['story_plan'], project, check_text=False)
+    from .reaction_dubbing import active as dubbing_active, validate as validate_dubs
+    if dubbing_active(settings):
+        validate_dubs(validated, project)
     if geometry(validated) != manifest.get('geometry'):
         raise ValueError('Mốc cảnh khác kế hoạch đã khóa; cần lập lại kế hoạch trước khi tạo giọng hoặc xuất.')
     from .hook_policy import slots as narration_slots
@@ -174,7 +181,10 @@ def contract_check(project):
         slot = slots.get(n.get('segment_id'))
         if (not slot or abs(n['start']-slot['start']) > .001
                 or abs(n.get('target_duration',0)-(slot['end']-slot['start']-.04)) > .002
-                or (slot.get('commentary_span', 1) > 1 and n.get('evidence') != slot['evidence'])):
+                or ((slot.get('commentary_span', 1) > 1 or slot.get('speech_kind') == 'dialogue') and n.get('evidence') != slot['evidence'])
+                or (slot.get('speech_kind') == 'dialogue' and
+                    (n.get('turns') != slot['turns'] or n['text'] != slot['narration'] or n.get('speech_kind') != 'dialogue'
+                     or any(n.get(k) != slot[k] for k in ('dialogue_window_id','dialogue_turn_index','output_offset','output_end'))))):
             raise ValueError('Mốc/thời lượng lời kể không khớp slot đã khóa. Lập lại kế hoạch thay vì ép giọng vào cảnh.')
 
 

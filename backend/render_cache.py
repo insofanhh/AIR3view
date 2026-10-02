@@ -97,14 +97,18 @@ def video_key(project,timeline,part,width,encoder):
 
 
 def audio_key(project,timeline,part):
+    from .music import project_asset
     settings=project['settings']
+    music = project_asset(project)
+    music_key = dict(file=file_identity(music), volume=settings.get('music_volume', .15),
+                     offset=part['start']) if music and settings.get('music_volume', .15) > 0 else None
     voices=[dict(start=round(v['start']-part['start'],6),end=round(v['end']-part['start'],6),
                  file=file_identity(store.asset(project['id'],v['audio']))) for v in timeline['voices']
             if v['start']<part['end'] and v['end']>part['start']]
     return digest(dict(version=VERSION,source=file_identity(store.asset(project['id'],project['source']['file'])),
         clips=clip_key(timeline,part),samples=round(part['duration']*48000),has_audio=project['metadata']['has_audio'],
         voices=voices,volume={k:settings[k] for k in ('original_volume','duck_volume','voice_volume')},
-        original=ranges(timeline,'original_audio',part),muted=ranges(timeline,'source_mutes',part)))[:32]
+        original=ranges(timeline,'original_audio',part),muted=ranges(timeline,'source_mutes',part),music=music_key))[:32]
 
 
 def valid_cache(folder,name,kind,duration,width=0):
@@ -161,6 +165,8 @@ def mix_audio(project,timeline,part,folder,check,progress):
         delay=max(0,round((v['start']-part['start'])*48000))
         filters.append(f'[{inputs+i}:a]atrim=start={left:.6f}:end={right:.6f},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,volume={s["voice_volume"]},adelay={delay}S:all=1[voice{i}]')
         mixed.append(f'[voice{i}]')
+    from .music import append_mix
+    append_mix(project, part, args, filters, mixed, inputs + len(voices))
     filters.append(''.join(mixed)+f'amix=inputs={len(mixed)}:duration=first:normalize=0,alimiter=limit=0.95:latency=1,apad,atrim=end_sample={round(part["duration"]*48000)}[outa]')
     graph=folder/'audio.filters.txt';graph.write_text(';\n'.join(filters),'utf-8')
     temporary=folder/'mix.tmp.wav'

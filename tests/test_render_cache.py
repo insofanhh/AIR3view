@@ -81,6 +81,33 @@ def test_only_one_changed_subtitle_chunk_renders_again(media_project):
     assert cache['audio_reused']
 
 
+def test_music_only_changes_reuse_video_and_match_single_pass(media_project):
+    from backend.music import save_upload
+    from tests.test_music import wav_bytes
+    p, folder = media_project
+    _, metadata = save_upload(folder, 'Music.wav', wav_bytes(.5, 660))
+    p['settings'].update(metadata, music_volume=.2)
+    timeline = render_cache.build(p, strict=True)
+    direct = folder / 'direct-music'
+    direct.mkdir()
+    output = render.render_part(p, timeline, timeline['parts'][0], direct, lambda: None, width=360)
+    render.render(p, lambda *a: None, lambda: None, preview=True)
+    first = p['preview_exports'][0]
+    def amplitude(path):
+        y = decode_audio(path)[round(.2*48000):round(.7*48000)]
+        return abs(np.sum(y*np.exp(-2j*np.pi*660*np.arange(len(y))/48000))) / len(y)
+    assert amplitude(store.asset(p['id'], first['file'])) == pytest.approx(amplitude(store.asset(p['id'], output['file'])), rel=.02)
+    old_packets = packet_hashes(store.asset(p['id'], first['file']))
+    p['settings']['music_volume'] = .1
+    render.render(p, lambda *a: None, lambda: None, preview=True)
+    second = p['preview_exports'][0]
+    assert second['cache']['video_rendered'] == 0
+    assert second['cache']['video_reused'] == 6
+    assert not second['cache']['audio_reused']
+    assert packet_hashes(store.asset(p['id'], second['file'])) == old_packets
+    assert amplitude(store.asset(p['id'], second['file'])) / amplitude(store.asset(p['id'], first['file'])) == pytest.approx(.5, abs=.02)
+
+
 def test_rules_and_project_name_do_not_invalidate_identical_media(media_project):
     p,_=media_project
     render.render(p,lambda *a:None,lambda:None,preview=True)

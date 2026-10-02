@@ -46,7 +46,8 @@ def refresh_source(project,report,check,transcribe,align_existing):
     cues=project.get('transcript',[])
     settings=project['settings']
     stats={'selected_cues':0,'reused':0,'transcribed_seconds':0,'asr_calls':0,'plain':0}
-    if not cues or not project.get('metadata',{}).get('has_audio'):
+    from .reaction_review import active as review_active
+    if review_active(settings) or not cues or not project.get('metadata',{}).get('has_audio'):
         return stats,[]
     # Common case: no work and no filesystem/model access at all.
     if all(valid_words(c) for c in cues):

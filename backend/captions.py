@@ -43,6 +43,9 @@ def refresh(project, report, check):
         n['cues'] = transcribe(audio, settings, check, expected_text=n['text'])
         for c in n['cues']:
             c['speaker'] = 'ai'
+        if n.get('speech_kind') == 'dialogue':
+            from .reaction_dubbing import captions as dialogue_captions
+            n['cues'], aligned = dialogue_captions(n,n['cues'],n['duration'])
         n['caption_version'] = 4
         project.update(exports=[], preview_exports=[])
         store.save(project)

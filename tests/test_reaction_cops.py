@@ -612,7 +612,7 @@ def test_commentary_setting_controls_full_source_repair(requested):
 
 def test_commentary_setting_rejects_out_of_range_and_invalidates_only_reaction_plan():
     from backend.story import plan_fingerprint
-    for value in (0, 11):
+    for value in (-1, 11):
         with pytest.raises(ValueError):
             Settings(editorial_mode='reaction_cops',reaction_commentary_count=value)
     project,_ = fixture()

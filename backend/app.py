@@ -237,6 +237,7 @@ class BatchInput(Model):
     settings: Settings
     source_project_id: str | None = None
     reference_token: str | None = None
+    music_token: str | None = None
 
 
 class BatchPreviewInput(Model):
@@ -498,6 +499,9 @@ def preview_batch(body: BatchPreviewInput):
             url = batches.canonical_url(item.url)
             if url in seen:
                 raise ValueError('Link trùng trong danh sách.')
+            from .music import ASSET_FIELDS
+            if set(item.settings) & ASSET_FIELDS:
+                raise ValueError('Nhạc nền dùng cấu hình chung, không đặt đường dẫn riêng cho từng video.')
             if 'voice_reference' in item.settings:
                 raise ValueError('Giọng mẫu dùng cấu hình chung, không đặt đường dẫn riêng cho từng video.')
             from .story import output_budget
@@ -534,15 +538,30 @@ def batch_excel_template():
     sheet = workbook.active
     sheet.title = 'Videos'
     sheet.append(['url', 'title', 'summary_minutes', 'editorial_mode', 'hook_enabled', 'hook_duration',
-                  'reaction_scene_duration_mode', 'reaction_scene_min_seconds', 'reaction_scene_max_seconds',
+                  'reaction_commentary_count', 'reaction_audio_mode', 'reaction_scene_duration_mode', 'reaction_scene_min_seconds', 'reaction_scene_max_seconds',
                   'export_mode', 'export_part_count'])
     sheet.append(['https://www.youtube.com/watch?v=EXiQCyqxmSE', 'Video mẫu', 3,
-                  'reaction_cops', False, None, 'auto', 10, 20, 'single', 2])
+                  'reaction_cops', False, None, 0, 'dubbed', 'auto', 10, 20, 'single', 2])
     stream = BytesIO()
     workbook.save(stream)
     stream.seek(0)
     return StreamingResponse(stream, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
                              headers={'Content-Disposition': 'attachment; filename="AIR3view-batch-template.xlsx"'})
+
+
+@app.post('/api/batches/music')
+async def upload_batch_music(file: UploadFile = File(...)):
+    from . import music
+    content = await file.read(music.MAX_BYTES + 1)
+    await file.close()
+    return await asyncio.to_thread(music.stage, file.filename, content)
+
+
+@app.get('/api/batches/music/{token}')
+def batch_music_media(token: str):
+    from . import music
+    path, _ = music.staged(token)
+    return FileResponse(path, headers={'Cache-Control': 'no-cache'})
 
 
 @app.get('/api/batches')
@@ -558,7 +577,7 @@ def list_batch_overview():
 @app.post('/api/batches')
 def create_batch(body: BatchInput):
     return batches.create(body.name, [item.model_dump() for item in body.items],
-                          body.settings.model_dump(), body.source_project_id, body.reference_token)
+                          body.settings.model_dump(), body.source_project_id, body.reference_token, body.music_token)
 
 
 @app.get('/api/batches/{batch_id}')
@@ -668,6 +687,17 @@ def edit_project(pid: str, body: ProjectEdit):
                 store.asset(pid, n['audio'])
         if incoming['settings']['voice_reference']:
             store.asset(pid, incoming['settings']['voice_reference'])
+        from . import music
+        music.project_asset({'id': pid, 'settings': incoming['settings']})
+        # Preserve trusted metadata; an undo may restore an earlier uploaded track.
+        if incoming['settings']['music_file']:
+            if incoming['settings']['music_file'] == project['settings'].get('music_file'):
+                for key in ('music_name', 'music_duration'):
+                    incoming['settings'][key] = project['settings'].get(key, incoming['settings'][key])
+            else:
+                incoming['settings']['music_duration'] = music.inspect(music.project_asset({'id': pid, 'settings': incoming['settings']}))
+        else:
+            incoming['settings'].update(music_name='', music_duration=0)
         # Limit server-side TTS requests to explicitly configured local services.
         for label, value in (('OmniVoice', incoming['settings']['omnivoice_url']),):
             tts_url = urlparse(value)
@@ -783,6 +813,26 @@ async def upload_reference(pid: str, file: UploadFile = File(...)):
 def project_document(pid: str):
     project = store.read(pid)
     return JSONResponse(project, headers={'Content-Disposition': f'attachment; filename="air3view-{pid[:8]}.json"'})
+
+
+@app.post('/api/projects/{pid}/music')
+async def upload_project_music(pid: str, file: UploadFile = File(...)):
+    from . import music
+    content = await file.read(music.MAX_BYTES + 1)
+    await file.close()
+    def save():
+        with store.LOCK:
+            editable(pid)
+            project = store.read(pid)
+            path, metadata = music.save_upload(store.project_dir(pid), file.filename, content)
+            try:
+                project['settings'].update(metadata)
+                project.update(exports=[], preview_exports=[])
+                return present_project(preferences.save_project(project))
+            except Exception:
+                path.unlink(missing_ok=True)
+                raise
+    return await asyncio.to_thread(save)
 
 
 @app.get('/media/{pid}/{relative:path}')

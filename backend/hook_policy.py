@@ -74,14 +74,30 @@ def slots(plan):
     from .reaction_commentary import slot
     result=[slot(plan, i) if row.get('commentary_span', 1) > 1 else row
             for i, row in enumerate(plan.get('selections', []))]
+    from .reaction_dubbing import voice_slots
+    dubs = voice_slots(plan)
+    result.extend(w for w in dubs if w['dialogue_window_id'] != 'hook')
+    result.sort(key=lambda row: (row['part'], row['start']))
     hook=plan.get('hook',{})
     if not hook.get('original_audio',True) and hook.get('narration','').strip():
-        result.insert(0,dict(id='hook',start=hook['start'],end=hook['end'],part=1,section='hook',
-                             evidence=hook['reason'],narration=hook['narration'],narration_offset=0))
+        hook_slots = [w for w in dubs if w['dialogue_window_id'] == 'hook']
+        result[0:0] = hook_slots or [dict(id='hook',start=hook['start'],end=hook['end'],part=1,section='hook',
+                             evidence=hook['reason'],narration=hook['narration'],narration_offset=0)]
     return result
 
 
 def set_text(plan, segment_id, text):
+    from .reaction_dubbing import voice_slots
+    dubbed_slot = next((w for w in voice_slots(plan) if w['id'] == segment_id), None)
+    if dubbed_slot:
+        if text != dubbed_slot['narration']:
+            raise ValueError('Sửa thoại lồng tiếng theo từng lượt nói; không đổi text ngoài ánh xạ nhân vật.')
+        return
+    dubbed = next((w for w in plan.get('dialogue_dubs', []) if w['id'] == segment_id), None)
+    if segment_id == 'hook':
+        dubbed = plan.get('hook_dub')
+    if dubbed and text != dubbed['narration']:
+        raise ValueError('Sửa thoại lồng tiếng theo từng lượt nói để giữ đúng nhân vật và dẫn chứng; phân tích lại nếu sửa thủ công.')
     if segment_id=='hook':
         plan['hook']['narration']=text
     else:

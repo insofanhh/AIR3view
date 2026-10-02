@@ -178,6 +178,11 @@ def duration_plan_manifest(result, project):
                              source_end=item['source_ranges'][-1]['end'],
                              commentary_span=item['commentary_span'],
                              timing_basis='sum_of_output_cuts')
+        if item.get('speech_kind') == 'dialogue':
+            slots[-1].update(speech_kind='dialogue',selection_ids=item['selection_ids'],
+                             dialogue_window_id=item['dialogue_window_id'],dialogue_turn_index=item['dialogue_turn_index'],
+                             output_offset=item['output_offset'],output_end=item['output_end'],
+                             timing_basis='source_turn_on_output_cuts')
     return {'version': 1, 'mode': 'duration-first', 'target': stats['target'],
             'requested_target': output_budget(project['settings'], stats['source'])[1],
             'minimum': stats['minimum'], 'source': stats['source'],
@@ -319,7 +324,7 @@ def plan_fingerprint(project):
         names += ['production_workflow', 'duration_min_ratio']
     names += ['summary_seconds'] if s.get('output_mode') == 'single' else ['part_count', 'part_seconds']
     if reaction_cops(s):
-        names += ['narration_style', 'reaction_commentary_count']
+        names += ['narration_style', 'reaction_commentary_count', 'reaction_audio_mode']
         if s.get('reaction_scene_duration_mode') == 'range':
             names += ['reaction_scene_duration_mode', 'reaction_scene_min_seconds',
                       'reaction_scene_max_seconds']
@@ -340,6 +345,13 @@ def plan_fingerprint(project):
     if reaction_cops(s):
         from .reaction_cops import VERSION as REACTION_VERSION
         payload['reaction_cops_version'] = REACTION_VERSION
+        from .reaction_editorial import VERSION as EDITORIAL_VERSION
+        from .reaction_dubbing import VERSION as DUBBING_VERSION
+        payload['reaction_editorial_version'] = EDITORIAL_VERSION
+        payload['reaction_dubbing_version'] = DUBBING_VERSION
+        from .reaction_review import active as review_active, VERSION as REVIEW_VERSION
+        if review_active(s):
+            payload['reaction_review_version'] = REVIEW_VERSION
         if s.get('reaction_scene_duration_mode') == 'range':
             from .reaction_commentary import VERSION as WINDOW_VERSION
             payload['reaction_commentary_window_version'] = WINDOW_VERSION

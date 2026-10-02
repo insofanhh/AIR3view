@@ -374,6 +374,9 @@ def render_part(project, timeline, part, folder, check, width=1080, *, video_onl
         delay = max(0, round((v['start'] - part['start']) * 48000))
         filters.append(f'[{i+len(clips)}:a]atrim=start={a:.6f}:end={b:.6f},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,volume={settings["voice_volume"]},adelay={delay}S:all=1[voice{i}]')
         mix.append(f'[voice{i}]')
+    if not video_only:
+        from .music import append_mix
+        append_mix(project, part, args, filters, mix, len(clips) + len(voices))
     filters.append(''.join(mix) + f'amix=inputs={len(mix)}:duration=first:normalize=0,alimiter=limit=0.95:latency=1[outa]')
     if video_only:
         filters=filters[:video_filter_count]

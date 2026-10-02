@@ -15,7 +15,7 @@ LOCAL_FIELDS = {'title', 'editorial_mode', 'hook_enabled', 'hook_duration', 'hoo
                 'export_mode', 'export_part_count',
                 'production_workflow', 'duration_min_ratio'}
 REFERENCE_FIELD = 'voice_reference'
-SHARED_FIELDS = set(Settings.model_fields) - LOCAL_FIELDS - {REFERENCE_FIELD}
+SHARED_FIELDS = set(Settings.model_fields) - LOCAL_FIELDS - {REFERENCE_FIELD, 'music_file', 'music_name', 'music_duration'}
 CONNECTION_FIELDS = {'provider', 'model', 'tts_provider', 'omnivoice_url',
                      'vieneu_device', 'asr_model', 'asr_device'}
 REFERENCE_EXTENSIONS = {'.wav', '.mp3', '.m4a', '.ogg', '.flac'}

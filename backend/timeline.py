@@ -140,6 +140,15 @@ def slice_clips(timeline, start, end):
 
 
 def build(project, strict=False):
+    from .music import track, project_asset
+    result = _build(project, strict)
+    if strict:
+        project_asset(project)
+    result['music'] = track(project, result['duration'])
+    return result
+
+
+def _build(project, strict=False):
     if not project['settings'].get('output_mode'):
         return build_legacy(project, strict)
     from .story import plan_is_current
@@ -176,6 +185,10 @@ def build_story(project, strict=False):
         from .plan_first import contract_check
         contract_check(project)
     plan = project['story_plan']
+    from .reaction_dubbing import active as dubbing_active
+    from .reaction_review import active as review_active
+    full_review = review_active(settings)
+    dubbed = dubbing_active(settings) or full_review
     narrated = storytelling(settings)
     if strict and narrated:
         # The actual WAV lengths are checked below. A newly created/shared
@@ -213,9 +226,14 @@ def build_story(project, strict=False):
         if row.get('commentary_span', 1) > 1:
             last_id = members(plan, i)[-1]['id']
             window_ends[row['id']] = next(c['end'] for c in clips if c['segment_id'] == last_id)
+    from .reaction_dubbing import voice_slots as dialogue_slots
+    dub_windows = {w['id']:w for w in dialogue_slots(plan)}
+    for sid, w in dub_windows.items():
+        first = next(c for c in clips if c['segment_id'] == w['selection_ids'][0])
+        window_ends[sid] = first['start'] + w['output_end']
     subtitle_rows = project['transcript']
     if settings.get('editorial_mode') == 'reaction_cops':
-        subtitle_rows = reaction_subtitle_rows(project)
+        subtitle_rows = [] if dubbed else reaction_subtitle_rows(project)
     for clip in clips:
         for left,right in excluded:
             a,b = max(left,clip['source_start']),min(right,clip['source_end'])
@@ -224,7 +242,7 @@ def build_story(project, strict=False):
                 source_mutes.append({'start':a+offset,'end':b+offset})
         if narrated and clip['kind']=='hook' and not plan['hook'].get('original_audio',True):
             source_mutes.append({'start':clip['start'],'end':clip['end']})
-        if narrated:
+        if narrated and not dubbed:
             keep = plan['hook'].get('original_audio',True) if clip['kind']=='hook' else not selections[clip['segment_id']]['narration'].strip()
             if not keep and settings.get('editorial_mode') != 'reaction_cops':
                 continue
@@ -240,17 +258,26 @@ def build_story(project, strict=False):
                                     'words':shifted_words(cue,offset)})
     for n in project['narrations']:
         if not n['enabled'] or not n['text'].strip(): continue
-        candidates=[c for c in clips if (c['kind']!='hook' or n.get('segment_id')=='hook') and c['source_start']<=n['start']<c['source_end']]
-        if n.get('segment_id'):
-            candidates=[c for c in candidates if c['segment_id']==n['segment_id']]
+        dub = dub_windows.get(n.get('segment_id'))
+        if dub:
+            candidates = [c for c in clips if c['segment_id'] == dub['selection_ids'][0]]
+        else:
+            candidates=[c for c in clips if (c['kind']!='hook' or n.get('segment_id')=='hook') and c['source_start']<=n['start']<c['source_end']]
+            if n.get('segment_id'):
+                candidates=[c for c in candidates if c['segment_id']==n['segment_id']]
         if not candidates:
             message=f"Lời dẫn {n['id']} nằm ngoài cảnh được chọn. Dời mốc vào cảnh hoặc phân tích lại."
             if strict: raise ValueError(message)
             warnings.append(message)
             continue
         clip=candidates[0]
-        start=frame(clip['start']+n['start']-clip['source_start'])
-        if n.get('duration',0)+start>window_ends.get(clip['segment_id'], clip['end'])+.001:
+        start=frame(clip['start']+dub['output_offset'] if dub else clip['start']+n['start']-clip['source_start'])
+        if full_review and strict:
+            from .voice_repair import duration_is_acceptable, reaction_tail_gap
+            if not duration_is_acceptable(n.get('duration',0),n.get('target_duration',0),
+                                          tail_gap=reaction_tail_gap(settings,n.get('target_duration',0))):
+                raise ValueError('Full review cần voice phủ cửa sổ đọc ở nhịp cố định; tạo lại đoạn chưa khớp.')
+        if n.get('duration',0)+start>window_ends.get(n.get('segment_id'), window_ends.get(clip['segment_id'], clip['end']))+.001:
             message=f"Lời dẫn {n['id']} dài hơn cảnh đã chọn. Rút ngắn lời hoặc phân tích lại trước khi xuất."
             if strict: raise ValueError(message)
             warnings.append(message)
@@ -260,7 +287,14 @@ def build_story(project, strict=False):
             warnings.append(message)
         mapped_narrations.append({**n,'start':start})
     virtual=copy.deepcopy(project)
+    if dubbed:
+        original_audio = []
+        source_mutes = [{'start':0.0, 'end':cursor}]
     virtual.update(metadata={**project['metadata'],'duration':cursor},transcript=mapped_cues,narrations=mapped_narrations)
+    if dubbed:
+        # The source transcript remains in its original language as evidence;
+        # it is not a displayed caption track in these audio profiles.
+        virtual['transcript_language'] = ''
     virtual['settings'].update(hook_enabled=False,narration_mode='overlay')
     result=build_legacy(virtual,strict)
     if narrated and settings.get('editorial_mode') == 'reaction_cops':

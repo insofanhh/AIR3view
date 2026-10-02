@@ -5,7 +5,7 @@ build/
 data/
 __pycache__/
 .pytest_cache/
-.pytest-tmp-*/
+.pytest-*/
 *.pyc
 .env
 *.log

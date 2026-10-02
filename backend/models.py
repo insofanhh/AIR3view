@@ -34,6 +34,12 @@ class Cue(Model):
         return self
 
 
+class DialogueTurn(Model):
+    source_cue_ids: list[str] = Field(min_length=1)
+    speaker_label: str = Field(min_length=1, max_length=60)
+    text: str = Field(min_length=1, max_length=3000)
+
+
 class Narration(Model):
     id: str
     start: float = Field(ge=0)
@@ -49,6 +55,13 @@ class Narration(Model):
     target_duration: float = Field(default=0, ge=0, le=1800)
     caption_version: int = 0
     cues: list[Cue] = Field(default_factory=list)
+    speech_kind: Literal['dialogue', 'review'] | None = None
+    turns: list[DialogueTurn] = Field(default_factory=list)
+    selection_ids: list[str] = Field(default_factory=list)
+    dialogue_window_id: str = ''
+    dialogue_turn_index: int | None = Field(default=None, ge=0)
+    output_offset: float = Field(default=0, ge=0)
+    output_end: float = Field(default=0, ge=0)
 
 
 class Settings(Model):
@@ -79,6 +92,17 @@ class Settings(Model):
     original_volume: float = Field(default=1, ge=0, le=2)
     duck_volume: float = Field(default=.15, ge=0, le=1)
     voice_volume: float = Field(default=1, ge=0, le=2)
+    music_file: str = Field(default='', max_length=180)
+    music_name: str = Field(default='', max_length=220)
+    music_duration: float = Field(default=0, ge=0)
+    music_volume: float = Field(default=.15, ge=0, le=1)
+
+    @field_validator('music_file')
+    @classmethod
+    def valid_music_file(cls, value):
+        if value and (Path(value).name != value or '/' in value or '\\' in value or '\x00' in value):
+            raise ValueError('Nhạc nền phải là file đã tải lên dự án.')
+        return value
     narration_mode: Literal['overlay', 'insert'] = 'overlay'
     hook_enabled: bool = False
     hook_duration: float | None = Field(default=None, ge=3, le=7)
@@ -120,7 +144,9 @@ class Settings(Model):
     narration_style: Literal['highlights', 'storytelling'] = 'highlights'
     editorial_mode: Literal['standard', 'reaction_cops'] = 'standard'
     original_dialogue_ratio: float = Field(default=.15, ge=.1, le=1)
-    reaction_commentary_count: int = Field(default=5, ge=1, le=10)
+    reaction_commentary_count: int = Field(default=5, ge=0, le=10)
+    # Saved projects keep their audio choice; the UI defaults new Reaction edits to dubbing.
+    reaction_audio_mode: Literal['original', 'dubbed'] = 'original'
     reaction_scene_duration_mode: Literal['auto', 'range'] = 'auto'
     reaction_scene_min_seconds: float = Field(default=10, ge=1, le=25)
     reaction_scene_max_seconds: float = Field(default=20, ge=1, le=25)
