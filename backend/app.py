@@ -6,13 +6,14 @@ import re
 import shutil
 import threading
 import uuid
+import traceback
 from datetime import datetime
 from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 import requests
-from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -168,6 +169,7 @@ def work():
         except Exception as e:
             message = providers.redact(str(e))
             message = re.sub(r'sk-[A-Za-z0-9_-]+', '[KEY]', message)
+            store.log_job(jid, providers.redact(traceback.format_exc()), 'error')
             store.update_job(jid, state='failed', message='Tác vụ chưa hoàn tất', error=message[-5000:])
         finally:
             QUEUE.task_done()
@@ -751,8 +753,20 @@ def project_jobs(pid: str):
 
 
 @app.get('/api/projects/{pid}/status')
-def project_status(pid: str):
-    return store.project_status(pid)
+def project_status(pid: str, log_after: int | None = Query(default=None, ge=0)):
+    return store.project_status(pid, log_after)
+
+
+@app.get('/api/projects/{pid}/logs')
+def project_logs(pid: str):
+    store.read(pid)
+    from .job_logs import read
+    with store.conn() as db:
+        rows = read(db, pid, limit=4000)
+    lines = [f'{datetime.fromtimestamp(r["created"]).astimezone().isoformat()} '
+             f'[{r["level"].upper()}] [{r["job_id"][:8]}] {r["message"]}' for r in rows]
+    return StreamingResponse(iter(['\n'.join(lines)]), media_type='text/plain; charset=utf-8',
+                             headers={'Content-Disposition': f'attachment; filename="air3view-{pid[:8]}.log"'})
 
 
 @app.post('/api/projects/{pid}/jobs')

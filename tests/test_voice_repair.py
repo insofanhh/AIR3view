@@ -9,6 +9,7 @@ from backend.voice_repair import (
     repair_prompt,
     repair_text,
     speech_units,
+    emergency_compact,
     reaction_tail_gap,
 )
 from backend import media, providers, store
@@ -205,6 +206,16 @@ def test_job_and_per_narration_repair_limits_are_bounded():
     assert speech_units("One two three") == 3
 
 
+def test_emergency_compact_is_bounded_and_keeps_uncertainty():
+    text = "Police arrive quickly. The suspect denies the accusation. The final outcome remains unconfirmed."
+    result = emergency_compact(text, target=7, measured=10)
+    assert result and result != text
+    assert result.startswith("Police arrive")
+    assert "unconfirmed" in result
+    assert speech_units(result) < speech_units(text)
+    assert emergency_compact("One short sentence.", target=2, measured=4) is None
+
+
 def test_synthesize_skips_completed_cache_and_repairs_only_failed_narration(
     synthesis_project, monkeypatch
 ):
@@ -270,6 +281,34 @@ def test_invalid_repair_answers_are_bounded_and_use_fresh_prompts(
     assert len(prompts) == 2
     assert "REPAIR GENERATION 1.1" in prompts[0]
     assert "REPAIR GENERATION 1.2" in prompts[1]
+
+
+def test_invalid_repair_answer_falls_back_to_measured_emergency_compaction(
+    synthesis_project, monkeypatch
+):
+    project = synthesis_project
+    project['narrations'][1]['text'] = (
+        'The officer arrives after a complaint. The suspect denies the accusation. '
+        'The final outcome remains unconfirmed.'
+    )
+    monkeypatch.setattr(
+        "backend.reference_voice.ensure_transcript", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(providers, "probe", lambda path: {"duration": 4})
+    generated = []
+
+    def always_too_long(client, params, endpoint, destination, report, check,
+                        progress, label, target_duration=0, **kwargs):
+        generated.append(params["text"])
+        raise DurationMismatchError("OmniVoice", 8, target_duration)
+
+    monkeypatch.setattr(providers, "generate_voice_audio", always_too_long)
+    monkeypatch.setattr(providers, "ask_ai", lambda *args: {"items": [{"id": "wrong", "text": "Invalid"}]})
+    with pytest.raises(ValueError, match="giới hạn retry"):
+        providers.synthesize(project, lambda *args: None, lambda: None)
+    state = store.read(project['id'])['voice_repair_state']['n1']
+    assert state['emergency_compactions'] >= 1
+    assert any(text != project['narrations'][1]['text'] for text in generated)
 
 
 def test_synthesize_does_not_convert_network_or_cancel_to_duration_repair(

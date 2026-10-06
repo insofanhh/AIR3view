@@ -49,7 +49,10 @@ def test_project_status_reports_jobs_and_change_without_sending_project_body(cli
     endpoint = f"/api/projects/{project['id']}/status"
     initial = client.get(endpoint)
     assert initial.status_code == 200
-    assert initial.json() == {'updated': project['updated'], 'preview_version': None, 'jobs': []}
+    assert initial.json()['updated'] == project['updated']
+    assert initial.json()['preview_version'] is None
+    assert initial.json()['jobs'] == []
+    assert initial.json()['logs'] == []
 
     job_id = store.new_job(project['id'], 'preview')
     store.update_job(job_id, state='running', progress=42)
@@ -57,6 +60,15 @@ def test_project_status_reports_jobs_and_change_without_sending_project_body(cli
     assert current['jobs'][0]['id'] == job_id
     assert current['jobs'][0]['progress'] == 42
     assert 'settings' not in current
+    assert current['logs'][-1]['job_id'] == job_id
+    assert 'Đã xếp hàng' in current['logs'][0]['message']
+    cursor = current['logs'][-1]['seq']
+    assert client.get(endpoint + '?log_after=' + str(cursor)).json()['logs'] == []
+
+    downloaded = client.get(f"/api/projects/{project['id']}/logs")
+    assert downloaded.status_code == 200
+    assert job_id[:8] in downloaded.text
+    assert 'Đã xếp hàng' in downloaded.text
 
     store.asset(project['id'], 'proxy.mp4').write_bytes(b'preview')
     assert client.get(endpoint).json()['preview_version'] is not None

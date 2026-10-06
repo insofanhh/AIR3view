@@ -5,20 +5,73 @@ from pathlib import Path
 import sys
 
 
+_TRANSFORMERS_API = (
+    'PretrainedConfig', 'PreTrainedModel', 'AutoTokenizer', 'AutoModel',
+    'Qwen3Config', 'Qwen3Model',
+)
+
+
+def _gpu_dependency_warning():
+    """Validate the isolated GPU stack before selecting the PyTorch backend."""
+    try:
+        import torch
+    except Exception as exc:
+        return f'PyTorch không nạp được ({type(exc).__name__}); tự chuyển sang CPU/ONNX.'
+    try:
+        import transformers
+        missing = [name for name in _TRANSFORMERS_API if not hasattr(transformers, name)]
+        if missing or not getattr(transformers, '__file__', None):
+            names = ', '.join(missing) or 'transformers.__file__'
+            return (f'Transformers GPU chưa đầy đủ ({names}); '
+                    'tự chuyển sang CPU/ONNX.')
+    except Exception as exc:
+        return (f'Transformers GPU không nạp được ({type(exc).__name__}: {exc}); '
+                'tự chuyển sang CPU/ONNX.')
+    try:
+        if not torch.cuda.is_available():
+            return 'PyTorch chưa nhận CUDA; tự chuyển sang CPU/ONNX.'
+    except Exception as exc:
+        return f'CUDA không khởi tạo được ({type(exc).__name__}); tự chuyển sang CPU/ONNX.'
+    return ''
+
+
 def select_device(requested):
     """Use the installed CUDA stack when ready; keep TTS usable otherwise."""
     if requested not in ('auto', 'cpu', 'cuda'):
         raise ValueError('Thiết bị VieNeu không hợp lệ.')
     if requested == 'cpu':
         return 'cpu', ''
-    try:
-        import torch
-        import transformers  # noqa: F401 - required by the PyTorch backbone
-    except ImportError:
-        return 'cpu', 'CUDA thiếu PyTorch hoặc transformers; tự chuyển sang CPU/ONNX.'
-    if not torch.cuda.is_available():
-        return 'cpu', 'PyTorch chưa nhận CUDA; tự chuyển sang CPU/ONNX.'
+    warning = _gpu_dependency_warning()
+    if warning:
+        return 'cpu', warning
     return 'cuda', ''
+
+
+def _is_gpu_setup_error(exc):
+    """Whether a failed GPU constructor can safely be retried with ONNX/CPU."""
+    if isinstance(exc, (ImportError, ModuleNotFoundError)):
+        return True
+    text = str(exc).lower()
+    if isinstance(exc, AttributeError) and ('transformers' in text or 'torch' in text):
+        return True
+    if isinstance(exc, OSError) and any(token in text for token in (
+        'dll load failed', 'cuda', 'cudnn', 'nvrtc', 'nvidia',
+    )):
+        return True
+    if isinstance(exc, RuntimeError) and any(token in text for token in (
+        'cuda', 'cudnn', 'nvrtc', 'nvidia driver', 'no kernel image',
+    )):
+        return True
+    cause = getattr(exc, '__cause__', None)
+    return cause is not None and _is_gpu_setup_error(cause)
+
+
+def _construct_vieneu(resolved):
+    from .vieneu import MODEL
+    from vieneu import Vieneu
+    return Vieneu(mode='v3turbo', backbone_repo=MODEL, device=resolved,
+                  backend='onnx' if resolved == 'cpu' else 'pytorch',
+                  precision='fp32', max_batch_size=4)
 
 
 def load_model(device):
@@ -31,10 +84,21 @@ def load_model(device):
         from . import store
         from .vieneu_onnx_files import install_sdk_fetch_hook
         install_sdk_fetch_hook(store.DATA)
-    from vieneu import Vieneu
-    tts = Vieneu(mode='v3turbo', backbone_repo=MODEL, device=resolved,
-                 backend='onnx' if resolved == 'cpu' else 'pytorch', precision='fp32', max_batch_size=4)
-    return tts, resolved, warning
+        return _construct_vieneu('cpu'), 'cpu', warning
+    try:
+        return _construct_vieneu('cuda'), 'cuda', ''
+    except Exception as exc:
+        if not _is_gpu_setup_error(exc):
+            raise
+        # The isolated GPU environment may pass import/readiness checks but
+        # fail while loading a native driver. Retry once with torch-free ONNX.
+        from . import store
+        from .vieneu_onnx_files import install_sdk_fetch_hook
+        install_sdk_fetch_hook(store.DATA)
+        fallback = _construct_vieneu('cpu')
+        detail = f'{type(exc).__name__}: {exc}'
+        return (fallback, 'cpu',
+                f'VieNeu GPU không khởi tạo được ({detail}); tự chuyển sang CPU/ONNX.')
 
 
 def synthesize(tts, params, output):

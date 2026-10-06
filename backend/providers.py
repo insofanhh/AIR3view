@@ -835,7 +835,8 @@ def synthesize(project, report, check, only_id=None):
                     if engine == 'VieNeu':
                         from .vieneu import generate
                         audio = generate(settings, narration['text'], raw_cached, report, check,
-                                         reference=reference_data, progress=5 + 80 * i / len(pending))
+                                         reference=reference_data, progress=5 + 80 * i / len(pending),
+                                         target_duration=target)
                         fit_metrics = fit_voice_audio(audio, destination, check,
                                              target_duration=target, speed=settings['voice_speed'], engine='VieNeu',
                                              **({'stable_speed':settings['voice_speed']} if settings.get('production_workflow')=='plan_first' else {}),
@@ -898,6 +899,43 @@ def synthesize(project, report, check, only_id=None):
                 check()
                 store.save(project)
                 if not repair_budget.consume(repairs):
+                    # Deterministic escape hatch for repeated provider rewrites.
+                    # It is measured again at the same selected pace, so a
+                    # story-selN failure cannot strand the whole project.
+                    emergency_count = int(state.get('emergency_compactions', 0))
+                    if emergency_count < 3:
+                        from .voice_repair import emergency_compact
+                        # Dialogue turns are immutable evidence: shortening a
+                        # speaker's words would change the event and can make
+                        # the turn-to-cue mapping invalid. Let the dialogue
+                        # repair path handle those with its own contract.
+                        compacted = (None if narration.get('speech_kind') == 'dialogue'
+                                     else emergency_compact(narration['text'], target, mismatch.measured))
+                        if compacted and compacted != narration['text'].strip():
+                            state['emergency_compactions'] = emergency_count + 1
+                            state['status'] = 'emergency_compacting'
+                            state['last_error'] = str(mismatch)
+                            narration.update(text=compacted, audio='', audio_hash='', duration=0, cues=[], caption_version=0)
+                            from .hook_policy import set_text
+                            try:
+                                for plan in (project.get('story_plan') or {}, (project.get('duration_plan') or {}).get('schedule') or {}):
+                                    if plan:
+                                        set_text(plan, narration.get('segment_id'), compacted)
+                            except ValueError:
+                                # A stale or grouped slot is not safe to edit
+                                # in place; keep the original narration and let
+                                # the bounded repair error explain the blocker.
+                                narration.update(text=state.get('approved_text', narration['text']), audio='',
+                                                 audio_hash='', duration=0, cues=[], caption_version=0)
+                                compacted = None
+                            if not compacted:
+                                state['status'] = 'limit_reached'
+                                store.save(project)
+                                continue
+                            project.update(exports=[], preview_exports=[])
+                            store.save(project)
+                            report(5 + 80*i/len(pending), f'Tự rút gọn khẩn cấp {narration.get("segment_id")} sau giới hạn sửa; đo lại cùng giọng/tốc độ…')
+                            continue
                     state['status']='limit_reached'
                     store.save(project)
                     limit=(f'{repair_budget.max_per_narration} lượt/đoạn' if repairs>=repair_budget.max_per_narration
@@ -929,6 +967,35 @@ def synthesize(project, report, check, only_id=None):
                                             generation=generation,
                                             **({'history':state['history'],'max_attempts':3,'measured_trial':True} if settings.get('production_workflow')=='plan_first' else {}))
                 except ValueError as exc:
+                    # A provider can return an unchanged/invalid rewrite before
+                    # the outer TTS loop gets another measured attempt. Use the
+                    # same bounded, evidence-preserving emergency compaction
+                    # here so errors such as story-sel0 do not stop the job at
+                    # the AI-repair boundary.
+                    from .voice_repair import emergency_compact
+                    emergency_count = int(state.get('emergency_compactions', 0))
+                    compacted = (None if narration.get('speech_kind') == 'dialogue'
+                                 else emergency_compact(narration['text'], target, mismatch.measured)
+                                 if emergency_count < 3 else None)
+                    if compacted and compacted != narration['text'].strip():
+                        from .hook_policy import set_text
+                        plans = [x for x in (project.get('story_plan') or {},
+                                             (project.get('duration_plan') or {}).get('schedule') or {}) if x]
+                        try:
+                            for plan in plans:
+                                set_text(plan, narration.get('segment_id'), compacted)
+                        except ValueError:
+                            compacted = None
+                        if compacted:
+                            state['emergency_compactions'] = emergency_count + 1
+                            state.update(status='emergency_compacting', last_error=str(exc))
+                            narration.update(text=compacted, audio='', audio_hash='', duration=0,
+                                             cues=[], caption_version=0)
+                            project.update(exports=[], preview_exports=[])
+                            store.save(project)
+                            report(5 + 80*i/len(pending),
+                                   f'Tự rút gọn khẩn cấp {narration.get("segment_id")} sau lỗi AI sửa lời; đo lại cùng giọng/tốc độ…')
+                            continue
                     state.update(status='rewrite_failed',last_error=str(exc))
                     store.save(project)
                     raise ValueError(f'{narration["id"]} ({mismatch.measured:.2f}s → {target:.2f}s): {exc} '

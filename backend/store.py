@@ -25,11 +25,29 @@ def conn():
 def init():
     with conn() as db:
         db.execute('PRAGMA journal_mode=WAL')
+        from .job_logs import initialize
+        initialize(db)
         db.execute('CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, body TEXT NOT NULL, updated REAL NOT NULL)')
         db.execute('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, project_id TEXT, kind TEXT, state TEXT, progress REAL, message TEXT, error TEXT, created REAL, cancelled INTEGER DEFAULT 0)')
         if 'options' not in {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}:
             db.execute("ALTER TABLE jobs ADD COLUMN options TEXT NOT NULL DEFAULT '{}'")
+        interrupted = db.execute("SELECT id,project_id FROM jobs WHERE state='running'").fetchall()
         db.execute("UPDATE jobs SET state='interrupted', message='Ứng dụng đã khởi động lại. Chọn Thử lại để tiếp tục.' WHERE state='running'")
+        from .job_logs import append
+        for row in interrupted:
+            append(db, row['project_id'], row['id'], 'warning',
+                   'Ứng dụng đã khởi động lại; tác vụ bị gián đoạn. Chọn Thử lại để tiếp tục.')
+        # The journal was introduced after older jobs already existed. Seed a
+        # compact terminal entry for those jobs so their last failure is still
+        # visible immediately after upgrading; new jobs use the live events
+        # written by new_job/claim_job/update_job below.
+        for row in db.execute('SELECT id,project_id,message,error FROM jobs').fetchall():
+            if db.execute('SELECT 1 FROM job_logs WHERE job_id=? LIMIT 1', (row['id'],)).fetchone():
+                continue
+            if row['message']:
+                append(db, row['project_id'], row['id'], 'info', row['message'])
+            if row['error']:
+                append(db, row['project_id'], row['id'], 'error', row['error'])
         db.execute('CREATE TABLE IF NOT EXISTS batches (id TEXT PRIMARY KEY, name TEXT NOT NULL, state TEXT NOT NULL, created REAL NOT NULL, settings TEXT NOT NULL)')
         db.execute('CREATE TABLE IF NOT EXISTS batch_items (id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, position INTEGER NOT NULL, project_id TEXT NOT NULL, url TEXT NOT NULL, state TEXT NOT NULL, job_id TEXT, error TEXT NOT NULL DEFAULT \'\', created REAL NOT NULL)')
         batch_columns = {row['name'] for row in db.execute('PRAGMA table_info(batch_items)')}
@@ -141,7 +159,7 @@ def jobs(pid):
         return [dict(x) for x in db.execute('SELECT * FROM jobs WHERE project_id=? ORDER BY created DESC LIMIT 20', (pid,))]
 
 
-def project_status(pid):
+def project_status(pid, log_after=None):
     """Small polling payload; the full project is fetched only after it changes."""
     with conn() as db:
         row = db.execute('SELECT updated FROM projects WHERE id=?', (pid,)).fetchone()
@@ -149,6 +167,8 @@ def project_status(pid):
             raise KeyError(pid)
         recent_jobs = [dict(x) for x in db.execute(
             'SELECT * FROM jobs WHERE project_id=? ORDER BY created DESC LIMIT 20', (pid,))]
+        from .job_logs import read
+        logs = read(db, pid, log_after)
     preview_version = None
     try:
         stat = (project_dir(pid) / 'proxy.mp4').stat()
@@ -157,7 +177,7 @@ def project_status(pid):
     except FileNotFoundError:
         pass
     return {'updated': row['updated'], 'preview_version': preview_version,
-            'jobs': recent_jobs}
+            'jobs': recent_jobs, 'logs': logs}
 
 
 def busy(pid):
@@ -176,6 +196,8 @@ def new_job(pid, kind, options=None):
         jid = uuid.uuid4().hex
         db.execute('INSERT INTO jobs (id,project_id,kind,state,progress,message,error,created,cancelled,options) VALUES (?,?,?,?,?,?,?,?,0,?)',
                    (jid, pid, kind, 'queued', 0, 'Đang chờ xử lý', '', time.time(),json.dumps(options or {})))
+        from .job_logs import append
+        append(db, pid, jid, 'info', f'Đã xếp hàng: {kind}')
     return jid
 
 
@@ -216,6 +238,7 @@ def delete_project(pid, revision):
             shutil.rmtree(directory)
         # Keep the record if filesystem cleanup fails, so deletion can retry.
         db.execute('DELETE FROM jobs WHERE project_id=?',(pid,))
+        db.execute('DELETE FROM job_logs WHERE project_id=?',(pid,))
         db.execute('DELETE FROM projects WHERE id=?',(pid,))
         db.execute("UPDATE batch_items SET title='Dự án đã xóa',exports='[]',job_id=NULL,state='deleted' WHERE project_id=?", (pid,))
         db.execute('UPDATE preferences SET source_project_id=NULL WHERE source_project_id=?',(pid,))
@@ -228,12 +251,32 @@ def update_job(jid, **values):
         raise ValueError('Invalid job update')
     with conn() as db:
         db.execute('UPDATE jobs SET ' + ','.join(k + '=?' for k in values) + ' WHERE id=?', [*values.values(), jid])
+        row = db.execute('SELECT project_id FROM jobs WHERE id=?', (jid,)).fetchone()
+        if row:
+            from .job_logs import append
+            if values.get('error'):
+                append(db, row['project_id'], jid, 'error', values['error'])
+            elif values.get('message'):
+                append(db, row['project_id'], jid, 'warning' if values.get('state') in ('cancelled','interrupted') else 'info', values['message'])
+
+
+def log_job(jid, message, level='info'):
+    with conn() as db:
+        row = db.execute('SELECT project_id FROM jobs WHERE id=?', (jid,)).fetchone()
+        if row:
+            from .job_logs import append
+            append(db, row['project_id'], jid, level, message)
 
 
 def claim_job(jid):
     """Ensure only one worker executes a queued job, including after recovery."""
     with conn() as db:
         result = db.execute("UPDATE jobs SET state='running',message='Đang bắt đầu…' WHERE id=? AND state='queued'", (jid,))
+        if result.rowcount == 1:
+            row = db.execute('SELECT project_id FROM jobs WHERE id=?', (jid,)).fetchone()
+            if row:
+                from .job_logs import append
+                append(db, row['project_id'], jid, 'info', 'Đang bắt đầu…')
         return result.rowcount == 1
 
 

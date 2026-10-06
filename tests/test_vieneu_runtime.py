@@ -31,12 +31,43 @@ def test_cuda_without_pytorch_falls_back_to_cpu(monkeypatch):
 
 def test_cuda_ready_uses_gpu_and_unavailable_driver_uses_cpu(monkeypatch):
     torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True))
+    transformers = SimpleNamespace(
+        __file__='transformers/__init__.py',
+        PretrainedConfig=object, PreTrainedModel=object,
+        AutoTokenizer=object, AutoModel=object,
+        Qwen3Config=object, Qwen3Model=object,
+    )
     monkeypatch.setitem(sys.modules, 'torch', torch)
-    monkeypatch.setitem(sys.modules, 'transformers', SimpleNamespace())
+    monkeypatch.setitem(sys.modules, 'transformers', transformers)
     assert select_device('cuda') == ('cuda', '')
     torch.cuda.is_available = lambda: False
     device, warning = select_device('cuda')
     assert device == 'cpu' and 'CUDA' in warning
+
+
+def test_incomplete_transformers_namespace_falls_back_to_cpu(monkeypatch):
+    torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True))
+    monkeypatch.setitem(sys.modules, 'torch', torch)
+    monkeypatch.setitem(sys.modules, 'transformers', SimpleNamespace(__file__=None))
+    device, warning = select_device('cuda')
+    assert device == 'cpu'
+    assert 'Transformers' in warning
+
+
+def test_gpu_constructor_dependency_error_retries_cpu(monkeypatch, tmp_path):
+    from backend import vieneu_worker
+    monkeypatch.setattr(vieneu_worker, 'select_device', lambda _: ('cuda', ''))
+    monkeypatch.setattr(vieneu_worker, '_construct_vieneu',
+                        lambda device: (_ for _ in ()).throw(ImportError('PretrainedConfig'))
+                        if device == 'cuda' else 'cpu-tts')
+    monkeypatch.setattr('backend.store.DATA', tmp_path)
+    installed = []
+    monkeypatch.setattr('backend.vieneu_onnx_files.install_sdk_fetch_hook',
+                        lambda data: installed.append(data))
+    tts, device, warning = vieneu_worker.load_model('cuda')
+    assert (tts, device) == ('cpu-tts', 'cpu')
+    assert installed == [tmp_path]
+    assert 'CPU/ONNX' in warning
 
 
 def test_gpu_worker_uses_isolated_transformers_before_app_packages(tmp_path, monkeypatch):

@@ -177,7 +177,11 @@ class LocalRuntime:
                 check()
                 elapsed = time.monotonic() - start
                 if elapsed > timeout:
-                    raise TimeoutError('VieNeu SDK quá 20 phút. Kiểm tra mạng tải model hoặc chọn thiết bị phù hợp rồi thử lại.')
+                    actual = self.info.get('device', device) if self.info else device
+                    raise TimeoutError(
+                        f'VieNeu SDK quá {round(timeout / 60, 1):g} phút trên {actual}. '
+                        'Kiểm tra bộ CUDA/Transformers và quyền đọc model, hoặc chạy lại bằng thiết bị phù hợp.'
+                    )
                 try:
                     message = self.messages.get(timeout=.2)
                 except queue.Empty:
@@ -211,6 +215,23 @@ _runtime = LocalRuntime()
 atexit.register(_runtime.close)
 
 
-def generate(settings, text, destination, report, check, reference=None, progress=5):
-    return _runtime.generate(infer_parameters(settings, text, reference), Path(destination),
-                             settings.get('vieneu_device', 'cpu'), report, check, progress)
+def generate(settings, text, destination, report, check, reference=None, progress=5,
+             target_duration=0):
+    """Create raw audio with a bounded per-segment watchdog.
+
+    A broken CUDA install can fall back to ONNX/CPU. That fallback is useful,
+    but allowing one native call to occupy the worker for 20 minutes makes a
+    batch appear frozen. A planned segment has enough information for a
+    proportional deadline; unplanned calls keep a conservative ten-minute
+    limit for either backend.
+    """
+    params = infer_parameters(settings, text, reference)
+    requested = settings.get('vieneu_device', 'cpu')
+    # The requested device may fall back to CPU after the worker loads the
+    # model. Use the same bounded deadline for both paths so a broken CUDA
+    # environment cannot silently restore the old 20-minute wait.
+    timeout = 600
+    if target_duration:
+        timeout = min(timeout, max(120, int(float(target_duration) * 20)))
+    return _runtime.generate(params, Path(destination), requested, report, check, progress,
+                             timeout=timeout)

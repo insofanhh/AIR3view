@@ -14,6 +14,12 @@ Từ bản có chức năng kiểm tra cập nhật, AIR3view tự kiểm tra Gi
 
 ## Tính năng
 
+### Cập nhật v0.1.16
+
+- Sửa nạp VieNeu GPU: kiểm tra đầy đủ API Transformers, cài package theo staging và cấp quyền đọc đúng cho tài khoản chạy AIR3view; nếu GPU không khởi tạo được thì fallback CPU/ONNX có cảnh báo rõ ràng.
+- Thêm watchdog tạo giọng theo thời lượng cảnh, tránh để một đoạn bị treo đủ 20 phút; bổ sung script chẩn đoán một đoạn voice đã lưu mà không chạy lại phân tích AI.
+- Ghi log tiến trình và lỗi rõ hơn để phân biệt lỗi model/quyền truy cập với lỗi thời lượng thoại.
+
 ### Cập nhật v0.1.15
 
 - Upload nhạc nền vào timeline của video đơn và lô; chỉnh âm lượng trong Giọng, tự lặp đến hết video và giữ đúng vị trí khi xuất chia phần. Thay nhạc/âm lượng dùng lại giọng AI và cache hình.
@@ -137,7 +143,11 @@ Nếu cần NVIDIA GPU, chạy script dưới đây rồi khởi động lại A
 .\Install-VieNeu-CUDA.ps1
 ```
 
-Script cài PyTorch CUDA trong `.venv` và tách `transformers` cùng bản `huggingface-hub` dành cho VieNeu vào `data/vieneu-gpu-python`. Cách này giữ bộ Gradio client của AIR3view/OmniVoice không xung đột phiên bản. CUDA cần driver/GPU phù hợp. Nếu thiếu PyTorch/transformers hoặc PyTorch chưa nhận GPU, VieNeu tự chạy CPU/ONNX và báo thiết bị thực tế trong tiến trình/trạng thái. CPU là lựa chọn đã kiểm thử của tích hợp này.
+Script cài PyTorch CUDA trong `.venv` và tách `transformers` cùng bản `huggingface-hub` dành cho VieNeu vào `data/vieneu-gpu-python`. Gói được cài trong thư mục tạm, kiểm tra đủ API VieNeu rồi mới thay thế bản đang dùng, cấp quyền đọc cho tài khoản desktop rồi mới hoàn tất, nên một lần cài gián đoạn hoặc chạy installer bằng quyền quản trị không làm worker thường bị rơi về CPU. Cách này giữ bộ Gradio client của AIR3view/OmniVoice không xung đột phiên bản. CUDA cần driver/GPU phù hợp. Worker kiểm tra cả API `PretrainedConfig` trước khi chọn GPU; nếu thiếu thư viện, lỗi driver hoặc lỗi khởi tạo PyTorch, VieNeu tự chuyển một lần sang CPU/ONNX và báo thiết bị thực tế trong tiến trình/trạng thái. CPU là lựa chọn dự phòng, nhưng chậm hơn đáng kể với đoạn dài.
+
+Mỗi đoạn VieNeu cũng có watchdog theo thời lượng cảnh. Đoạn có kế hoạch không còn giữ worker 20 phút khi ONNX/CPU bị treo; hệ thống dừng sớm, lưu tiến độ và cho phép chạy lại sau khi sửa môi trường CUDA.
+
+Để đo một đoạn đã lưu mà không chạy lại phân tích AI, dùng `scripts/diagnose-vieneu.py --project <id> --narration story-sel0 --device cuda`.
 
 **OmniVoice là lựa chọn phụ.** Nếu cần, dùng môi trường Python riêng để tránh xung đột PyTorch với backend. Hướng dẫn gốc: [OmniVoice](https://github.com/k2-fsa/OmniVoice).
 

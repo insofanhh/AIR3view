@@ -97,6 +97,49 @@ def speech_units(text: str) -> int:
     return len(re.findall(r"[\u3400-\u9fff]|[^\W_\u3400-\u9fff]+", text or "", re.UNICODE))
 
 
+def emergency_compact(text: str, target: float, measured: float) -> str | None:
+    """Last deterministic guard when a model repeats the same bad duration.
+
+    Keep complete sentences and uncertainty markers, then remove the least
+    informative trailing sentence. This is deliberately used only after the
+    measured repair budget is exhausted; it never changes the selected voice
+    or its pace and gives the normal TTS validator another measured attempt.
+    """
+    if not text or target <= 0 or measured <= target:
+        return None
+    sentences = [x.strip() for x in re.findall(r'[^.!?。！？]+[.!?。！？]+', text) if x.strip()]
+    if len(sentences) < 2:
+        return None
+    desired = max(3, round(speech_units(text) * target / measured))
+    if speech_units(text) <= desired + 1:
+        return None
+    # Prefer retaining the opening situation and explicit uncertainty. Drop
+    # the smallest low-information sentence first, normally a repeated result.
+    def score(sentence):
+        lower = sentence.lower()
+        protected = sum(lower.count(x) for x in ('unconfirmed', 'unclear', 'unknown', 'not ', 'chưa', 'không'))
+        connective = sum(lower.count(x) for x in ('also', 'at the same time', 'still', 'then', 'đồng thời', 'vẫn'))
+        return protected * 100 + connective * 10 + speech_units(sentence)
+    # Keep the opening situation and final confirmed state whenever there are
+    # enough sentences to do so. Dropping either boundary can make a compacted
+    # review lose its premise or its outcome, which is worse than a little
+    # extra narration. Middle sentences are the safe first candidates.
+    removable = list(range(1, len(sentences) - 1)) if len(sentences) >= 3 else list(range(len(sentences)))
+    order = sorted(removable, key=lambda i: score(sentences[i]))
+    kept = list(sentences)
+    for index in order:
+        candidate = [x for i, x in enumerate(kept) if i != index]
+        if speech_units(' '.join(candidate)) <= desired + 2:
+            result = ' '.join(candidate).strip()
+            if result and result != text.strip():
+                return result
+    # A final bounded sentence cut is safer than allowing an endless retry;
+    # never cut inside a word and retain at least two complete sentences.
+    result = (' '.join((sentences[0], sentences[-1])) if len(sentences) >= 3
+              else ' '.join(sentences[:2])).strip()
+    return result if speech_units(result) >= max(3, desired // 2) else None
+
+
 def perspective_drift(original,candidate):
     personal=r'\b(?:i|me|my|we|us|our|you|your|tôi|tao|mày)\b|[我你]'
     return not re.search(personal,original,re.I) and bool(re.search(personal,candidate,re.I))

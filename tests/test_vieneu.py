@@ -103,3 +103,13 @@ def test_provider_error_does_not_retry_as_duration_error(tmp_path, monkeypatch):
         providers.generate_voice_audio(None, {}, '/wrapper_1', tmp_path/'out.wav', lambda *a: None,
                                        lambda: None, 0, 'Test', target_duration=10, engine='VieNeu')
     assert len(calls)==1
+
+
+def test_vieneu_generate_uses_bounded_cpu_deadline(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(vieneu._runtime, 'generate',
+                        lambda *args, **kwargs: calls.append(kwargs) or tmp_path/'out.wav')
+    settings = Settings(vieneu_device='cpu').model_dump()
+    vieneu.generate(settings, 'Short text', tmp_path/'out.wav', lambda *a: None,
+                    lambda: None, target_duration=13.027)
+    assert calls[0]['timeout'] == 260
