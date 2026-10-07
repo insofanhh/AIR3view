@@ -295,6 +295,27 @@ def test_unsafe_srt_merge_falls_back_to_lossless_raw_cues():
     assert [c['text'] for c in result['cues']]==[c['text'] for c in project['source_transcript']]
 
 
+def test_long_source_optimization_preserves_all_cues_without_ai():
+    project,_=fixture()
+    original=[dict(id=str(i),start=i*2,end=i*2+1.5,text=f'I did not confirm item {i}.') for i in range(765)]
+    project['source_transcript']=original
+    result=optimize_cues(project,lambda *a:pytest.fail('long source optimization request'),None,lambda *a:None,lambda:None)
+    assert len(result['cues'])==len(original)
+    for before,after in zip(original,result['cues']):
+        assert all(after[k]==before[k] for k in ('id','start','end','text'))
+        assert after['source_cue_ids']==[before['id']]
+
+
+@pytest.mark.parametrize('bad',['empty','duplicate'])
+def test_long_source_optimization_rejects_corrupt_mapping(bad):
+    project,_=fixture()
+    project['source_transcript']=[dict(id=str(i),start=i,end=i+.5,text='Confirmed.') for i in range(501)]
+    if bad=='empty':project['source_transcript'][20]['text']=''
+    else:project['source_transcript'][20]['id']='0'
+    with pytest.raises(ValueError):
+        optimize_cues(project,lambda *a:pytest.fail('corrupt source request'),None,lambda *a:None,lambda:None)
+
+
 def test_srt_token_exhaustion_splits_batch_and_preserves_every_cue():
     from backend.providers import OpenAIOutputIncomplete
     project,_=fixture()

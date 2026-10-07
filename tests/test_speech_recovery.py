@@ -79,6 +79,19 @@ def test_large_batch_recovery_splits_only_remaining_ids(tmp_path):
     assert [len(c) for c in calls]==[80,40,40] and len(out['items'])==80
 
 
+@pytest.mark.parametrize('provider,count',[('openai',64),('gemini',128)])
+def test_long_source_roles_use_larger_request_and_halve_only_unresolved(tmp_path,provider,count):
+    p,_=sample();p['settings']['provider']=provider
+    p['transcript']=[dict(id=str(i),start=i,end=i+1,text='Sentence') for i in range(count)]
+    calls=[]
+    def ask(prompt,*args):
+        ids=[r['cue'] for r in requested(prompt)];calls.append(ids)
+        return {'items':[] if len(calls)==1 else [role(i) for i in ids]}
+    out=speech.classify(p,ask,tmp_path,lambda *a:None,lambda:None)
+    assert [len(c) for c in calls]==[count,count//2,count//2]
+    assert len(out['items'])==count
+
+
 def test_schema_error_is_repaired_but_value_errors_are_not_hidden(tmp_path):
     p,_=sample();calls=[]
     def ask(prompt,*a):

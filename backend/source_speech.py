@@ -90,7 +90,11 @@ def classify(project, ask_ai, folder, report, check):
     classified = []
     if not project['metadata'].get('has_audio', True):
         rows = []
-    batch_size = 32 if project['settings'].get('provider') == 'openai' else 80
+    # 32-cue batches are needlessly expensive for long subtitle tracks.  The
+    # response schema is bounded and recovery already splits an oversized
+    # request, so use a larger safe batch and let the existing splitter handle
+    # providers with a tighter token budget.
+    batch_size = 64 if project['settings'].get('provider') == 'openai' else 128
     for offset in range(0, len(rows), batch_size):
         check()
         batch = rows[offset:offset+batch_size]

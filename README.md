@@ -14,6 +14,13 @@ Từ bản có chức năng kiểm tra cập nhật, AIR3view tự kiểm tra Gi
 
 ## Tính năng
 
+### Cập nhật v0.1.17
+
+- Giảm request phân tích nguồn dài: lô transcript lớn hơn, phân loại vai trò theo lô 64 cue cho OpenAI/128 cue cho provider khác và tự chia khi vượt giới hạn token.
+- Với nguồn trên 500 cue trong luồng Efficient, giữ nguyên lời và mốc nguồn thay vì gọi AI tối ưu lại toàn bộ phụ đề; vẫn phân loại, loại lời bình nguồn và cue chưa chắc chắn.
+- Full review dùng cửa sổ đọc khoảng 18–24 giây, tối đa 25 giây, qua nhiều cảnh ngắn; giữ nguyên giọng và tốc độ đã chọn.
+- Khi kiểm chứng lời kể không hội tụ, gửi cả câu bị từ chối và lỗi cụ thể để sửa riêng; thêm hai lượt sửa bảo thủ có kiểm chứng, lưu chẩn đoán và giữ đoạn đã duyệt. Không tự chấp nhận câu dự phòng chưa có chứng cứ.
+
 ### Cập nhật v0.1.16
 
 - Sửa nạp VieNeu GPU: kiểm tra đầy đủ API Transformers, cài package theo staging và cấp quyền đọc đúng cho tài khoản chạy AIR3view; nếu GPU không khởi tạo được thì fallback CPU/ONNX có cảnh báo rõ ràng.

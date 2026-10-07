@@ -101,7 +101,7 @@ def test_visual_cuts_independent_of_complete_source_words(seconds):
 
 
 def test_default_visual_cuts_and_more_than_ten_review_windows():
-    p,plan=fixture(length=12,count=15)
+    p,plan=fixture(length=12,count=24)
     locked=reaction_cops.validate_plan(prepare(plan,p),p,check_text=False)
     assert all(r['end']-r['start']<=6.001 for r in locked['selections'])
     assert len([s for s in slots(locked) if s['narration']])>10
@@ -177,8 +177,47 @@ def test_fabricated_future_citations_and_malformed_json_have_bounded_retry(tmp_p
         ans=writer(prompt,*args)
         for line in ans['items']:line['source_cue_ids']=['unknown_future']
         return ans
-    with pytest.raises(ValueError,match='3 lượt'):write(locked,p,outline(p),fake,tmp_path,lambda *a:None,lambda:None)
-    assert len(calls)==3 and len(set(calls))==3
+    with pytest.raises(ValueError,match='5 lượt'):write(locked,p,outline(p),fake,tmp_path,lambda *a:None,lambda:None)
+    assert len(calls)==5 and len(set(calls))==5
+
+
+def test_confirmed_detail_repaired_with_rejected_text_and_independent_verdict(tmp_path):
+    p,plan=fixture(length=12,count=4)
+    p['reaction_cues'][0]['text']='Yeah. Just some roaches.'
+    locked=reaction_cops.validate_plan(prepare(plan,p),p,check_text=False)
+    checked=0
+    corrected='She confirms the presence of roaches. The other possibility remains unconfirmed, so those two details cannot be treated alike.'
+    def fake(prompt,*args):
+        nonlocal checked
+        answer=writer(prompt,*args)
+        if args[-1] is ReviewCheck:
+            checked+=1
+            if checked<=3:
+                answer['items'][0].update(valid=False,issue='Roaches were explicitly confirmed; only the other possibility is uncertain.')
+        elif args[-1] is ReviewText and checked>=3:
+            assert 'REJECTED TEXT' in prompt and 'explicitly confirmed' in prompt
+            assert 'Conservative evidence repair' in prompt
+            answer['items'][0]['text']=corrected
+        return answer
+    result=write(locked,p,outline(p),fake,tmp_path,lambda *a:None,lambda:None)
+    assert checked==4
+    assert result['selections'][0]['narration']==corrected
+
+
+def test_persistent_factual_rejection_never_becomes_unverified_fallback(tmp_path):
+    p,plan=fixture()
+    locked=reaction_cops.validate_plan(prepare(plan,p),p,check_text=False)
+    def fake(prompt,*args):
+        answer=writer(prompt,*args)
+        if args[-1] is ReviewCheck:
+            for item in answer['items']:
+                item.update(valid=False,issue='Unsupported factual claim')
+        return answer
+    with pytest.raises(ValueError,match='5 lượt'):
+        write(locked,p,outline(p),fake,tmp_path,lambda *a:None,lambda:None)
+    checkpoint=json.loads(next((tmp_path/'reaction-review-cache').glob('*.json')).read_text('utf-8'))
+    assert checkpoint['accepted']=={}
+    assert checkpoint['failures'][0]['feedback']
 
 
 def test_short_target_can_cut_inside_a_long_source_utterance(tmp_path):

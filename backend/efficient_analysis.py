@@ -52,7 +52,10 @@ VisionEvidence = EvidenceAnswer
 ReviewEvidence = EvidenceAnswer
 
 _VERSION = 2  # Source speech policy: re-read evidence under editorial/dialogue distinction.
-_TRANSCRIPT_LIMIT = 6000
+# Keep each evidence request comfortably below the OpenAI TPM budget while
+# avoiding dozens of tiny calls for long source videos.  The old 6k-character
+# limit produced 13 requests for the 16-minute source in the supplied log.
+_TRANSCRIPT_LIMIT = 9000
 _MAX_IMAGES = 36
 _MAX_IMAGES_PER_CALL = 6
 _VISION_BATCH_VERSION = 4

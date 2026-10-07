@@ -52,6 +52,10 @@ def recover(batch,prompt,cached,path,ask_ai,settings,folder,report,check):
     # Smaller requests after each round avoid asking for the same 80-item
     # envelope again. With 80 input IDs this is at most 15 calls per run.
     sizes = (32,16,8,4) if settings.get('provider') == 'openai' else (80,40,20,10)
+    # Start larger for the new long-source batches; retain the established
+    # recovery sizes for smaller requests and halve on token/ID failures.
+    if len(batch) > sizes[0]:
+        sizes = (64,32,16,8) if settings.get('provider') == 'openai' else (128,64,32,16)
     for round_index,size in enumerate(sizes):
         check()
         pending=[c for c in batch if c['cue'] not in accepted]

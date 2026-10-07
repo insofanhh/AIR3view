@@ -10,7 +10,7 @@ import uuid
 from pydantic import Field
 from .models import Model
 
-VERSION = 2
+VERSION = 3  # longer reading windows and evidence-reviewed targeted recovery
 RULE = '''REACTION COPS FULL REVIEW v2 (commentary count=0):
 Write an original third-person situation story and logical review in the requested
 language. All output speech is the same AI host, never impersonated dialogue.
@@ -190,8 +190,10 @@ def prepare(raw, project):
         part_end = part_start+1
         while part_end < len(rows) and rows[part_end]['part'] == rows[part_start]['part']:
             part_end += 1
-        # Bounded DP: all cuts belong to exactly one voice. Prefer ~12s, penalize
-        # tiny tails; evidence windows never cross the export/part boundary.
+        # Bounded DP: all cuts belong to exactly one voice. Prefer a single
+        # 18–24s reading window so VieNeu renders fewer native requests on
+        # long reviews; the source is still cut into the same short visual
+        # pieces. Evidence windows never cross the export/part boundary.
         costs = {part_end:0.0}
         choices = {}
         for left in range(part_end-1, part_start-1, -1):
@@ -201,7 +203,7 @@ def prepare(raw, project):
                 seconds += rows[right]['end']-rows[right]['start']
                 if seconds > 25+.001:
                     break
-                options.append((max(0,8-seconds)*20 + abs(seconds-12)*.05 + .2 + costs[right+1], right+1))
+                options.append((max(0,18-seconds)*20 + abs(seconds-22)*.05 + .2 + costs[right+1], right+1))
             costs[left], choices[left] = min(options)
         left = part_start
         while left < part_end:
@@ -406,7 +408,8 @@ def write(plan, project, outline, ask_ai, folder, report, check):
             if cached and (not isinstance(cached,str) or quality_issue(cached) or wrong_language(cached,project['settings']['language'])):
                 del state['accepted'][row['id']]
         errors = []
-        for attempt in range(3):
+        rejected = {}
+        for attempt in range(5):
             pending = [r for r in group if r['id'] not in state['accepted']]
             if not pending:
                 break
@@ -428,7 +431,8 @@ def write(plan, project, outline, ask_ai, folder, report, check):
                     'current_cues':[compact(c) for c in current], 'earlier_confirmed':[compact(c) for c in prior],
                     'focus':visible_focus(outline,ids,eligible),
                     'last_known_time':latest})
-            prompt = (RULE+f'\nOUTPUT LANGUAGE: {project["settings"]["language"]}. '
+            repair_mode = ('Conservative evidence repair: remove unsupported claims, retain explicitly confirmed facts separately from uncertain claims. No generic filler. ' if attempt >= 3 else '')
+            prompt = (RULE+'\n'+repair_mode+f'\nOUTPUT LANGUAGE: {project["settings"]["language"]}. '
                       'Write every requested ID once. Cite supporting current/earlier cue IDs in source_cue_ids only; '
                       'never put IDs or time in spoken text. Add a grounded logical explanation, not just a transcript '
                       'translation. Word counts guide drafting; audio will be measured at the fixed voice pace. '
@@ -436,7 +440,8 @@ def write(plan, project, outline, ask_ai, folder, report, check):
                       f'\nGENERATION: {state["generation"]}\nREQUESTED: '+json.dumps(entries,ensure_ascii=False)+
                       '\nPREVIOUS HOST (continuity only, never new evidence; avoid repeating): '+json.dumps(
                           [state['accepted'][r['id']] for r in rows[:offset] if r['id'] in state['accepted']][-2:],ensure_ascii=False)+
-                      '\nSTYLE (wording preference only; full-review evidence and structure rules take priority): '+project['settings']['draft_rule']+'\nFIX: '+' '.join(errors))
+                      '\nSTYLE (wording preference only; full-review evidence and structure rules take priority): '+project['settings']['draft_rule']+'\nFIX: '+' '.join(errors)+
+                      '\nREJECTED TEXT (correct, never reuse unchanged): '+json.dumps(rejected,ensure_ascii=False))
             report(92, f'Viết và kiểm tra full review {offset+1}–{offset+len(group)}/{len(rows)}…')
             try:
                 answer = ReviewText.model_validate(ask_ai(prompt,[],project['settings'],folder,check,ReviewText)).model_dump()
@@ -479,10 +484,16 @@ def write(plan, project, outline, ask_ai, folder, report, check):
                     if len(matches)==1 and matches[0]['valid']:
                         state['accepted'][item['id']] = item['text']
                     else:
+                        rejected[item['id']] = item['text']
                         errors.append(item['id']+': '+(matches[0]['issue'] if len(matches)==1 else 'missing review verdict'))
             save()
         if any(r['id'] not in state['accepted'] for r in group):
-            raise ValueError('Full review chưa đạt kiểm tra chứng cứ sau 3 lượt sửa riêng: '+' '.join(errors)[:1200])
+            state.setdefault('failures', []).append({
+                'ids': [r['id'] for r in group if r['id'] not in state['accepted']],
+                'feedback': errors, 'generation': state['generation']})
+            save()
+            raise ValueError('Full review chưa đạt kiểm tra chứng cứ sau 5 lượt sửa riêng: '
+                             + ' '.join(errors)[:1200])
         for row in group:
             set_text(plan,row['id'],state['accepted'][row['id']])
     return plan
