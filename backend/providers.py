@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import time
 import random
+import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,8 @@ import requests
 from . import credentials, store
 from .media import NO_WINDOW, probe, transcribe
 from .models import AnalysisAnswer, TranslationAnswer
+from .ai_schema import AISchemaError, strict_schema, response_models, model_schema
+from .ai_errors import AIProviderError, codex_failure
 from .voice_repair import (DurationMismatchError, RepairBudget,
                             duration_bounds, duration_is_acceptable,
                             reaction_tail_gap, repair_text, NarrationReply, VOICE_REPAIR_VERSION)
@@ -76,7 +79,14 @@ def _openai_error(response):
         error = response.json().get('error', {})
     except (ValueError, AttributeError):
         error = {}
+    if not isinstance(error, dict):
+        error = {}
     message = str(error.get('message') or '')
+    if error.get('code') == 'invalid_json_schema' or (response.status_code == 400 and 'schema' in message.lower()):
+        return AIProviderError('OpenAI', 'invalid_json_schema',
+                               'Schema kết quả không hợp lệ; cần cập nhật ứng dụng trước khi thử lại.')
+    if response.status_code in (401, 403):
+        return AIProviderError('OpenAI', 'authentication', 'Kiểm tra API key và quyền truy cập model.')
     match = re.search(r'Limit\s+(\d+)\s*,\s*Requested\s+(\d+)', message, re.I)
     if response.status_code == 429 and match and int(match.group(2)) > int(match.group(1)):
         return OpenAIRequestTooLarge(int(match.group(1)), int(match.group(2)))
@@ -179,13 +189,74 @@ def codex_binary():
 
 
 def codex_error(details):
-    if "hit your usage limit" in details or 'usage_limit_reached' in details:
-        return 'Codex đã hết hạn mức. Chờ hạn mức được đặt lại hoặc chọn OpenAI API trong Kết nối, rồi Thử lại. Các đoạn phân tích đã hoàn tất vẫn có trong cache. ' + details[-700:]
-    return 'Codex chưa xử lý được. Kiểm tra kết nối và trạng thái đăng nhập Codex. ' + details[-1200:]
+    return str(codex_failure(details))
+
+
+def _write_ai_record(path, record):
+    """Diagnostic writes must not hide a provider failure or invalidate cache."""
+    temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+    try:
+        path.parent.mkdir(exist_ok=True)
+        temporary.write_text(json.dumps(record, ensure_ascii=False), 'utf-8')
+        temporary.replace(path)
+    except OSError:
+        pass
+    finally:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _log_ai_failure(cache, fingerprint, settings, model, schema, error):
+    """Useful metadata only: no source prompt, CLI log tail, keys or cookies."""
+    record = {'time_utc': datetime.now(timezone.utc).isoformat(),
+              'provider': settings['provider'], 'model': settings.get('model', ''),
+              'stage': model.__name__, 'response_model': model.__name__,
+              'schema_sha256': digest(schema), 'code': getattr(error, 'code', 'unknown'),
+              'retryable': getattr(error, 'retryable', False)}
+    if isinstance(error, AISchemaError):
+        record['schema_path'] = error.path
+    path = cache / (fingerprint + '.failure.json')
+    _write_ai_record(path, record)
+
+
+def preflight_ai(settings, folder, check):
+    if settings['provider'] not in ('codex', 'openai'):
+        return
+    for model in response_models():
+        check()
+        try:
+            strict_schema(model)
+        except AISchemaError as error:
+            try:
+                schema = model_schema(model)
+            except AISchemaError:
+                schema = {'response_model': model.__name__, 'schema_generation_failed': True}
+            _log_ai_failure(folder / 'analysis-cache', 'preflight-' + digest(schema), settings, model, schema, error)
+            raise
+
+
+def _log_ai_call(cache, fingerprint, settings, model, started, cache_hit, requests_count):
+    record = {'provider': settings['provider'], 'model': settings.get('model', ''),
+              'stage': model.__name__, 'response_model': model.__name__,
+              'elapsed_seconds': round(time.monotonic() - started, 3),
+              'cache_hit': cache_hit, 'request_count': requests_count}
+    path = cache / (fingerprint + '.call.json')
+    _write_ai_record(path, record)
 
 
 def ask_ai(prompt, images, settings, folder, check, response_model=AnalysisAnswer):
-    schema = response_model.model_json_schema()
+    call_started, requests_count = time.monotonic(), 0
+    check()
+    raw_schema = {'response_model': response_model.__name__, 'schema_generation_failed': True}
+    try:
+        raw_schema = model_schema(response_model)
+        schema = strict_schema(response_model) if settings['provider'] in ('codex', 'openai') else raw_schema
+    except AISchemaError as error:
+        _log_ai_failure(folder / 'analysis-cache', 'schema-' + digest(raw_schema),
+                        settings, response_model, raw_schema, error)
+        raise
     # Preserve the established detailed-workflow cache identity. Efficient
     # evidence stages add a content key to their prompt and use their own
     # content-addressed cache, so this legacy cache remains compatible.
@@ -194,9 +265,26 @@ def ask_ai(prompt, images, settings, folder, check, response_model=AnalysisAnswe
     cache = folder / 'analysis-cache'
     cache.mkdir(exist_ok=True)
     output = cache / (fingerprint + '.json')
-    if output.exists():
+    legacy_schema = raw_schema
+    if response_model.__name__ == 'DubReview':
+        # Before issue became mandatory, a valid reviewer reply may already
+        # have been cached under this exact Pydantic schema.
+        legacy_schema = json.loads(json.dumps(raw_schema))
+        item = legacy_schema['$defs']['DubReviewItem']
+        item['required'] = ['id', 'valid']
+        item['properties']['issue']['default'] = ''
+    legacy_fingerprint = digest({'prompt': prompt, 'images': image_inputs,
+                                 'provider': settings['provider'], 'model': settings['model'], 'schema': legacy_schema})
+    candidates = [output]
+    if legacy_fingerprint != fingerprint:
+        candidates.append(cache / (legacy_fingerprint + '.json'))
+    for cached in candidates:
         try:
-            return response_model.model_validate_json(output.read_text('utf-8')).model_dump()
+            # Missing issue is rejected by DubReview; defaults on persisted
+            # legacy models remain supported, followed by caller validation.
+            result = response_model.model_validate_json(cached.read_text('utf-8')).model_dump()
+            _log_ai_call(cache, fingerprint, settings, response_model, call_started, True, 0)
+            return result
         except (OSError, ValueError):
             # A killed process may leave a partial response. Ignore it and
             # issue a new request; do not overwrite it until validation passes.
@@ -204,6 +292,7 @@ def ask_ai(prompt, images, settings, folder, check, response_model=AnalysisAnswe
     check()
     if settings['provider'] == 'gemini':
         from .gemini import generate
+        requests_count += 1
         text, usage = generate(prompt, images, settings['model'], schema, key('gemini'), check)
         (cache / (fingerprint + '.usage.json')).write_text(json.dumps(usage), 'utf-8')
     elif settings['provider'] == 'openai':
@@ -225,9 +314,12 @@ def ask_ai(prompt, images, settings, folder, check, response_model=AnalysisAnswe
         for budget_attempt in range(2):
             for attempt in range(4):
                 check()
+                requests_count += 1
                 response = requests.post('https://api.openai.com/v1/responses', json=body, headers={'Authorization': 'Bearer ' + key()}, timeout=(15, 300))
                 known_error = _openai_error(response) if not response.ok else None
                 if known_error:
+                    _log_ai_failure(cache, fingerprint, settings, response_model, schema, known_error)
+                    _log_ai_call(cache, fingerprint, settings, response_model, call_started, False, requests_count)
                     raise known_error
                 if response.status_code not in (429, 500, 502, 503) or attempt == 3:
                     break
@@ -273,6 +365,7 @@ def ask_ai(prompt, images, settings, folder, check, response_model=AnalysisAnswe
             args += ['--image', str(p)]
         args += ['-']
         log_path = cache / (fingerprint + '.log')
+        requests_count += 1
         with log_path.open('wb') as log:
             process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=log, stderr=log, creationflags=NO_WINDOW)
             try:
@@ -282,15 +375,21 @@ def ask_ai(prompt, images, settings, folder, check, response_model=AnalysisAnswe
                 while process.poll() is None:
                     check()
                     if time.monotonic() - started > 900:
-                        raise TimeoutError('Codex quá 15 phút cho một đoạn. Hãy thử lại hoặc đổi provider.')
+                        error = AIProviderError('Codex', 'timeout', 'Timeout sau 15 phút; thử lại từ tiến độ đã lưu.', True)
+                        _log_ai_failure(cache, fingerprint, settings, response_model, schema, error)
+                        _log_ai_call(cache, fingerprint, settings, response_model, call_started, False, requests_count)
+                        raise error
                     time.sleep(.3)
             except BaseException:
                 process.kill()
                 process.wait()
                 raise
         if process.returncode or not response_path.exists():
-            details = log_path.read_text('utf-8', errors='replace')[-1200:]
-            raise RuntimeError(codex_error(details))
+            details = log_path.read_text('utf-8', errors='replace')
+            error = codex_failure(details)
+            _log_ai_failure(cache, fingerprint, settings, response_model, schema, error)
+            _log_ai_call(cache, fingerprint, settings, response_model, call_started, False, requests_count)
+            raise error
         text = response_path.read_text('utf-8')
     try:
         result = (response_model.parse_ai_response(text) if issubclass(response_model,NarrationReply)
@@ -310,7 +409,10 @@ def ask_ai(prompt, images, settings, folder, check, response_model=AnalysisAnswe
         'raw_sha256': hashlib.sha256(text.encode('utf-8')).hexdigest(),
         'image_inputs': image_inputs,
         'provider': settings['provider'], 'model': settings['model'],
+        'elapsed_seconds': round(time.monotonic() - call_started, 3),
+        'request_count': requests_count,
     }, ensure_ascii=False), 'utf-8')
+    _log_ai_call(cache, fingerprint, settings, response_model, call_started, False, requests_count)
     return result
 
 

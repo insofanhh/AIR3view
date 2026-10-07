@@ -21,3 +21,9 @@ test('automatic retries stop after three attempts',()=>{
   for(let attempt=0;attempt<MAX_DURATION_AUTO_RETRIES;attempt++)assert.equal(canAutoRetryDuration(job,attempt),true);
   assert.equal(canAutoRetryDuration(job,MAX_DURATION_AUTO_RETRIES),false);
 });
+
+test('schema failures never trigger duration retry even with misleading log text',()=>{
+  const job={state:'failed',error:'[AI:invalid_json_schema] timeout rate limit '+error};
+  assert.equal(isRetryableDurationFailure(job),false);
+  assert.equal(canAutoRetryDuration(job,0),false);
+});

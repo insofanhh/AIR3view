@@ -91,6 +91,8 @@ def work():
                 check()
                 project = store.read(record['project_id'])
                 kind = record['kind']
+                if kind in ('all', 'analyze', 'localize', 'language', 'voice') or kind.startswith('voice:'):
+                    providers.preflight_ai(project['settings'], store.project_dir(project['id']), check)
                 if kind == 'all':
                     from .story import output_budget
                     output_budget(project['settings'])

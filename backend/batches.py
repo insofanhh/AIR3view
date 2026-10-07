@@ -47,6 +47,8 @@ def canonical_url(raw):
 
 def pipeline_retryable_error(error):
     message = str(error).lower()
+    if any(marker in message for marker in ('invalid_json_schema', '[ai:authentication]', '[ai:quota]')):
+        return False
     return ('ai sửa thời lượng không hợp lệ' in message or
             'voice-repair-attempts' in message and 'access is denied' in message or
             'scene[' in message and any(detail in message for detail in
@@ -56,6 +58,8 @@ def pipeline_retryable_error(error):
 
 def retryable_error(error):
     message = str(error).lower()
+    if any(marker in message for marker in ('invalid_json_schema', '[ai:authentication]', '[ai:quota]')):
+        return False
     if any(x in message for x in ('request too large', 'insufficient_quota', 'billing_hard_limit',
                                   'invalid api key', 'unauthorized', 'forbidden',
                                   'sign in to confirm you', 'xác minh phiên tải',

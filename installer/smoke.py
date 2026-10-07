@@ -21,12 +21,14 @@ def main():
     assert (root / 'update-helper.ps1').is_file()
     assert (root / 'update-helper.ps1').read_bytes().startswith(b'\xef\xbb\xbf'), 'Windows PowerShell 5.1 requires UTF-8 BOM'
     from backend import vieneu
+    from backend.ai_schema import preflight
     import openpyxl
     from backend.media import filter_complex_file_option
     from backend.vieneu_onnx_files import install_sdk_fetch_hook
 
     assert vieneu.status()['ok'], 'VieNeu SDK missing from installer'
     assert openpyxl.__version__, 'Excel import dependency missing from installer'
+    preflight('codex')  # Strict response contracts must work in the vendored runtime too.
     assert filter_complex_file_option(str(root / 'tools' / 'ffmpeg.exe')) in ('-/filter_complex', '-filter_complex_script')
     with tempfile.TemporaryDirectory() as data:
         install_sdk_fetch_hook(Path(data))

@@ -91,6 +91,95 @@ def test_resume_uses_accepted_translation_and_retries_only_failed_windows(tmp_pa
     assert calls  # language change invalidates the translation checkpoint
 
 
+def test_reviewer_provider_failure_saves_candidates_and_resumes_review_only(tmp_path):
+    from backend.ai_errors import AIProviderError
+    p, plan = fixture()
+    def fail_review(*args):
+        if args[-1] is DubReview:
+            raise AIProviderError('Codex', 'invalid_json_schema', 'Missing issue')
+        return translator(*args)
+    with pytest.raises(AIProviderError):
+        write(plan, p, fail_review, tmp_path, lambda *a: None, lambda: None)
+    path = next((tmp_path / 'dialogue-plans').glob('*.json'))
+    checkpoint = json.loads(path.read_text('utf-8'))
+    assert not checkpoint['accepted'] and set(checkpoint['pending_review']) == {'dub0'}
+    calls = []
+    def resume(*args):
+        calls.append(args[-1])
+        assert args[-1] is DubReview
+        return translator(*args)
+    result = write(plan, p, resume, tmp_path, lambda *a: None, lambda: None)
+    assert calls == [DubReview]
+    validate(result, p)
+    checkpoint = json.loads(path.read_text('utf-8'))
+    assert checkpoint['generation'] == 1
+    assert not checkpoint['pending_review'] and set(checkpoint['accepted']) == {'dub0'}
+
+
+def test_missing_review_field_never_accepts_unverified_dialogue(tmp_path):
+    p, plan = fixture()
+    calls = []
+    def missing_issue(*args):
+        calls.append(args[-1])
+        answer = translator(*args)
+        if args[-1] is DubReview:
+            del answer['items'][0]['issue']
+        return answer
+    with pytest.raises(ValueError, match='Không dịch đủ'):
+        write(plan, p, missing_issue, tmp_path, lambda *a: None, lambda: None)
+    assert calls == [DubAnswer, DubReview, DubReview, DubReview]
+    checkpoint = json.loads(next((tmp_path / 'dialogue-plans').glob('*.json')).read_text('utf-8'))
+    assert not checkpoint['accepted'] and checkpoint['pending_review']
+
+
+def test_rejected_review_only_regenerates_failed_ids_in_batch(tmp_path):
+    p, plan = fixture()
+    for row in plan['selections']:
+        row['narration'] = ''
+    reviews, translated_ids = 0, []
+    def review_once(*args):
+        nonlocal reviews
+        answer = translator(*args)
+        if args[-1] is DubReview:
+            reviews += 1
+            if reviews == 1:
+                answer['items'][-1].update(valid=False, issue='Missing negation')
+        else:
+            translated_ids.append([i['id'] for i in answer['items']])
+        return answer
+    write(plan, p, review_once, tmp_path, lambda *a: None, lambda: None)
+    assert translated_ids == [['dub0', 'dub1'], ['dub1']]
+
+
+def test_cancellation_before_review_retains_pending_translation(tmp_path):
+    from backend.media import Cancelled
+    p, plan = fixture()
+    cancel = False
+    def translate(*args):
+        nonlocal cancel
+        answer = translator(*args)
+        cancel = True
+        return answer
+    def check():
+        if cancel:
+            raise Cancelled('Stop')
+    with pytest.raises(Cancelled):
+        write(plan, p, translate, tmp_path, lambda *a: None, check)
+    checkpoint = json.loads(next((tmp_path / 'dialogue-plans').glob('*.json')).read_text('utf-8'))
+    assert checkpoint['pending_review'] and not checkpoint['accepted']
+    write(plan, p, translator, tmp_path, lambda *a: None, lambda: None)
+
+
+def test_legacy_accepted_checkpoint_remains_usable(tmp_path):
+    p, plan = fixture()
+    write(plan, p, translator, tmp_path, lambda *a: None, lambda: None)
+    path = next((tmp_path / 'dialogue-plans').glob('*.json'))
+    checkpoint = json.loads(path.read_text('utf-8'))
+    path.write_text(json.dumps({k: checkpoint[k] for k in ('accepted', 'generation')}), 'utf-8')
+    write(plan, p, lambda *a: pytest.fail('Old accepted checkpoint must resume'),
+          tmp_path, lambda *a: None, lambda: None)
+
+
 @pytest.mark.parametrize('problem',['missing','duplicate','narrator','wrong_order'])
 def test_turn_coverage_and_role_reject_invalid_dialogue(tmp_path,problem):
     p,plan=fixture()

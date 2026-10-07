@@ -306,6 +306,32 @@ def test_long_source_optimization_preserves_all_cues_without_ai():
         assert after['source_cue_ids']==[before['id']]
 
 
+def test_402_cue_incident_uses_lossless_local_cleanup_in_efficient_mode():
+    project, _ = fixture()
+    original = [dict(id=str(i), start=i*2, end=i*2+1.5,
+                     text=f'I did not confirm item {i}.') for i in range(402)]
+    project['source_transcript'] = original
+    result = optimize_cues(project, lambda *a: pytest.fail('Unnecessary subtitle rewrite'), None,
+                           lambda *a: None, lambda: None)
+    assert len(result['cues']) == 402
+    assert result['warnings'][0]['code'] == 'conservative_source_passthrough'
+    assert all(all(a[k] == b[k] for k in ('id', 'start', 'end', 'text'))
+               for a, b in zip(original, result['cues']))
+
+
+def test_detailed_mode_still_offers_ai_cleanup_for_medium_sources():
+    project, _ = fixture()
+    project['settings']['analysis_workflow'] = 'detailed'
+    project['source_transcript'] = [dict(id=str(i), start=i, end=i+.5, text='Confirmed.') for i in range(130)]
+    calls = []
+    def optimizer(prompt, *args):
+        batch = json.loads(prompt.split('\nREQUESTED: ', 1)[1])
+        calls.append(len(batch))
+        return {'cues': [{'source_cue_ids': [c['id']], 'text': c['text']} for c in batch], 'warnings': []}
+    optimize_cues(project, optimizer, None, lambda *a: None, lambda: None)
+    assert calls == [128, 2]
+
+
 @pytest.mark.parametrize('bad',['empty','duplicate'])
 def test_long_source_optimization_rejects_corrupt_mapping(bad):
     project,_=fixture()

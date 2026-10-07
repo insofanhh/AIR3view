@@ -204,6 +204,33 @@ def test_batch_runs_in_background_without_browser_polling(database, monkeypatch)
         assert current['items'][0]['state'] == 'completed'
 
 
+def test_worker_schema_preflight_fails_before_source_or_ai_work(database, monkeypatch):
+    from backend.models import Model
+    from backend import providers
+    module = importlib.import_module('backend.app')
+    class Unsafe(Model):
+        data: dict[str, str]
+    monkeypatch.setattr(providers, 'response_models', lambda: (Unsafe,))
+    work_calls = []
+    def forbidden(*args):
+        work_calls.append('prepare')
+        raise AssertionError('preflight must precede prepare')
+    monkeypatch.setattr(module, 'prepare', forbidden)
+    project = store.create('Preflight', {'kind': 'upload', 'file': 'source.mp4'})
+    with TestClient(app) as client:
+        response = client.post('/api/projects/' + project['id'] + '/jobs', json={'kind': 'all'},
+                               headers={'X-AIR3view': 'studio'})
+        assert response.status_code == 200
+        jid = response.json()['id']
+        for _ in range(30):
+            record = store.job(jid)
+            if record['state'] == 'failed':
+                break
+            time.sleep(.1)
+        assert record['state'] == 'failed' and 'invalid_json_schema' in record['error']
+        assert not work_calls
+
+
 def test_batch_scheduler_is_durable_isolated_and_respects_pause(database):
     batch = batches.create('Two videos', [{'url': URL_A}, {'url': URL_B,
                            'title': 'Second', 'settings': {'summary_seconds': 90}}], settings())

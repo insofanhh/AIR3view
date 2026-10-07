@@ -330,12 +330,13 @@ def optimize_cues(project, ask_ai, folder, report, check):
     previous = project.get('reaction_optimization') or {}
     if previous.get('fingerprint') == identity and len(previous.get('source_cue_ids', [])) == len(original):
         return previous
-    # For a long subtitle track the expensive optimizer adds little value: it
+    # Medium/long tracks in efficient analysis need no AI formatting pass: it
     # must preserve every cue one-to-one and cannot safely merge across role or
     # event boundaries.  Keep the source timings/text as evidence and let the
-    # role classifier decide what is admissible.  This removes the 14-minute
-    # optimization stage seen in the supplied log while retaining all cues.
-    if (len(original) > 500 and project.get('settings', {}).get('analysis_workflow', 'efficient') == 'efficient'):
+    # role classifier decide what is admissible. In the 402-cue incident this
+    # unnecessary pass took 4m31s. Detailed analysis still offers AI cleanup.
+    if (len(original) >= 128 and project.get('settings', {}).get('analysis_workflow', 'efficient') == 'efficient'):
+        check()
         source_ids = [str(c.get('id', i)) for i, c in enumerate(original)]
         if len(set(source_ids)) != len(source_ids):
             raise ValueError('Source cue IDs trùng nhau; không thể ánh xạ SRT an toàn.')
@@ -345,8 +346,9 @@ def optimize_cues(project, ask_ai, folder, report, check):
                  'start': float(c['start']), 'end': float(c['end']),
                  'text': str(c.get('text', '')).strip()}
                 for i, c in enumerate(original)]
-        warning = {'code': 'long_source_passthrough',
+        warning = {'code': 'long_source_passthrough' if len(original) > 500 else 'conservative_source_passthrough',
                    'message': f'Giữ nguyên {len(cues)} cue nguồn; phân loại vai trò sẽ loại lời bình và cue không chắc.'}
+        report(83, f'Bảo toàn {len(cues)} cue nguồn bằng xử lý cục bộ; tiếp tục phân loại vai trò…')
         return {'version': VERSION, 'fingerprint': identity,
                 'source_cue_ids': [str(c.get('id', i)) for i, c in enumerate(original)],
                 'cues': cues, 'warnings': [warning]}
