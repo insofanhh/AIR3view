@@ -50,6 +50,31 @@ def packet_hashes(path):
         return [hashlib.sha256(bytes(p)).hexdigest() for p in c.demux(video=0) if p.size]
 
 
+def test_fully_muted_source_mixes_real_voice_without_decoding_source(media_project,monkeypatch):
+    p,folder=media_project
+    timeline=build(p,strict=True)
+    part=dict(index=1,start=0,end=timeline['duration'],duration=timeline['duration'])
+    timeline['source_mutes']=[dict(start=0,end=part['end'])]
+    audio_folder=folder/'silent-source-mix';audio_folder.mkdir()
+    actual=render_cache.run_progress
+    commands=[]
+    def capture(args,*a,**k):
+        commands.append(args)
+        return actual(args,*a,**k)
+    monkeypatch.setattr(render_cache,'run_progress',capture)
+    render_cache.mix_audio(p,timeline,part,audio_folder,lambda:None,lambda *a:None)
+    assert str(folder/'source.mp4') not in commands[0]
+    assert str(folder/'voice.wav') in commands[0]
+    with av.open(str(audio_folder/'mix.wav')) as container:
+        samples=np.concatenate([f.to_ndarray()[0].reshape(-1,2)[:,0] for f in container.decode(audio=0)]).astype(float)/32768
+    start=timeline['voices'][0]['start']+.5
+    samples=samples[round(start*48000):round((start+1)*48000)]
+    def amp(hz):
+        return abs(np.sum(samples*np.exp(-2j*np.pi*hz*np.arange(len(samples))/48000)))/len(samples)
+    assert amp(880)>.01 and amp(220)<.001
+    assert abs(probe(audio_folder/'mix.wav')['duration']-part['duration'])<.001
+
+
 def test_volume_only_change_reuses_all_video_packets_and_progress(media_project):
     p,folder=media_project;messages=[]
     render.render(p,lambda value,message:messages.append((value,message)),lambda:None,preview=True)

@@ -270,21 +270,35 @@ def _solve(groups, total, low, high, beat_count, check):
     return result[1]
 
 
-def plan(project, logical, check=lambda: None):
+def plan(project, logical, check=lambda: None, *, window_cache=None):
     started = time.monotonic()
     low, high = bounds(project['settings'])
     source_shots = shots(project)
     cuts = [copy.deepcopy(c) for c in logical if c['kind'] == 'hook']
     floor, last_shot = 0, None
+    prior_floor, prior_excerpt = 0, None
     visual_beats = []
     for rows, start, end in _windows(project, logical):
-        beats, groups = _candidates(project, rows, source_shots, low, high, floor, last_shot)
+        # Recovery changes only a few windows. Memoize successful prefix solves
+        # within this single transaction, never across projects/source changes.
+        key=digest(dict(rows=rows,low=low,high=high,floor=floor,last=last_shot)) if window_cache is not None else None
+        cached=window_cache.get(key) if window_cache is not None else None
+        if cached:
+            beats,path=cached
+            groups=None
+        else:
+            beats,groups=_candidates(project,rows,source_shots,low,high,floor,last_shot)
         try:
-            path = _solve(groups, round((end-start)*FPS), low, high, len(beats), check)
+            if not cached:
+                path = _solve(groups, round((end-start)*FPS), low, high, len(beats), check)
+                if window_cache is not None:
+                    window_cache[key]=(beats,path)
         except VisualConstraintError as exc:
             context = dict(exc.context)
             context.update(window_id=rows[0]['id'], window_start=start,
                            window_end=end,
+                           source_floor=floor, previous_excerpt=copy.deepcopy(last_shot),
+                           prior_window_floor=prior_floor, prior_window_excerpt=copy.deepcopy(prior_excerpt),
                            row_ids=[r['id'] for r in rows])
             raise VisualConstraintError(exc.code, f"{rows[0]['id']} · {start:.2f}–{end:.2f}s: {exc.detail}", context) from None
         cursor = round(start*FPS)
@@ -298,6 +312,7 @@ def plan(project, logical, check=lambda: None):
                              shot_id=candidate['shot_id'], evidence_ids=_ids(candidate, length),
                              evidence_segments=candidate['segment_ids'], reason=candidate['reason']))
             cursor += length
+        prior_floor, prior_excerpt = floor, copy.deepcopy(last_shot)
         floor = path[-1][0]['a']+path[-1][1]
         last_shot = _previous(*path[-1])
         visual_beats.append(dict(window_id=rows[0]['id'], start=start, end=end,

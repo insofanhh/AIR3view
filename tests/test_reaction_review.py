@@ -160,6 +160,8 @@ def test_write_resume_and_targeted_semantic_retry(tmp_path):
         ans=writer(prompt,*args);schema=args[-1];calls.append((schema,ans))
         if schema is ReviewCheck and not rejected:
             ans['items'][0].update(valid=False,issue='Unsupported conclusion');rejected=True
+        elif schema is ReviewText and rejected:
+            ans['items'][0]['text']='The accusation remains disputed. Verification is still needed before accepting the claim.'
         return ans
     first=write(copy.deepcopy(locked),p,outline(p),fake,tmp_path,lambda *a:None,lambda:None)
     text_calls=[a for schema,a in calls if schema is ReviewText]
@@ -200,6 +202,11 @@ def test_confirmed_detail_repaired_with_rejected_text_and_independent_verdict(tm
             assert 'REJECTED TEXT' in prompt and 'explicitly confirmed' in prompt
             assert 'Conservative evidence repair' in prompt
             answer['items'][0]['text']=corrected
+        elif args[-1] is ReviewText and checked:
+            # A correction must differ from the rejected draft; identical
+            # paragraphs no longer waste another independent reviewer call.
+            answer['items'][0]['text']+=['',' The finding still needs careful attribution.',
+                                       ' That claim needs a separate check.'][checked]
         return answer
     result=write(locked,p,outline(p),fake,tmp_path,lambda *a:None,lambda:None)
     assert checked==4

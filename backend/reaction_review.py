@@ -6,11 +6,13 @@ import math
 import re
 import logging
 import uuid
+import time
 
 from pydantic import Field
 from .models import Model
 
-VERSION = 3  # longer reading windows and evidence-reviewed targeted recovery
+VERSION = 3  # preserve accepted plans/voice fingerprints during this update
+WRITER_VERSION = 4  # durable fact-specific repair/checkpoints
 RULE = '''REACTION COPS FULL REVIEW v2 (commentary count=0):
 Write an original third-person situation story and logical review in the requested
 language. All output speech is the same AI host, never impersonated dialogue.
@@ -73,10 +75,18 @@ class ReviewText(Model):
     items: list[ReviewLine] = Field(min_length=1, max_length=4)
 
 
+class SupportedFact(Model):
+    statement: str = Field(min_length=1,max_length=400)
+    source_cue_ids: list[str] = Field(min_length=1,max_length=30)
+
+
 class ReviewVerdict(Model):
     id: str
     valid: bool
     issue: str = Field(max_length=500)
+    supported_facts: list[SupportedFact] = Field(default_factory=list,max_length=12)
+    forbidden_claims: list[str] = Field(default_factory=list,max_length=12)
+    required_points: list[str] = Field(default_factory=list,max_length=12)
 
 
 class ReviewCheck(Model):
@@ -386,22 +396,29 @@ def write(plan, project, outline, ask_ai, folder, report, check, *, only_ids=Non
     from .narration_text import clean_narration
     from .narration_language import wrong_language
     from pydantic import ValidationError
+    from .review_evidence import (utterance_ledger, checkpoint_key, load_checkpoint,
+        save_checkpoint, record_rejection, repair_constraints)
+    started=time.monotonic()
+    metrics={'writer_calls':0,'review_calls':0,'reused_windows':0,'repeated_drafts':0}
     rows = [s for s in slots(plan) if s['narration'].strip()]
     if only_ids is not None:
         rows = [s for s in rows if s['id'] in only_ids]
     eligible = {c['id']:c for c,r in zip(project['reaction_cues'],project['source_speech']['items'])
                 if r['role']=='participant' and r['confidence']>=.7}
     rate = speech_rate(project)
-    identity = {'version':VERSION, 'outline':outline, 'slots':rows,
+    identity = {'version':WRITER_VERSION, 'outline':outline, 'slots':rows,
                 'language':project['settings']['language'], 'rule':project['settings']['draft_rule'],
                 'model':project['settings']['model'], 'provider':project['settings']['provider']}
     cache = folder/'reaction-review-cache'
     cache.mkdir(exist_ok=True)
     path = cache/(hashlib.sha256(json.dumps(identity,sort_keys=True,ensure_ascii=False).encode()).hexdigest()+'.json')
     state = {'generation':0, 'accepted':{}}
-    if path.is_file():
+    legacy_identity={**identity,'version':VERSION}
+    legacy_path=cache/(hashlib.sha256(json.dumps(legacy_identity,sort_keys=True,ensure_ascii=False).encode()).hexdigest()+'.json')
+    read_path=path if path.is_file() else legacy_path
+    if read_path.is_file():
         try:
-            stored = json.loads(path.read_text('utf-8'))
+            stored = json.loads(read_path.read_text('utf-8'))
             if isinstance(stored.get('accepted'),dict):
                 state = stored
         except (OSError, ValueError, AttributeError):
@@ -410,6 +427,50 @@ def write(plan, project, outline, ask_ai, folder, report, check, *, only_ids=Non
         temporary = path.with_suffix('.tmp')
         temporary.write_text(json.dumps(state,ensure_ascii=False),'utf-8')
         temporary.replace(path)
+    entries_by_id={}
+    checkpoints={}
+    checkpoint_paths={}
+    for row in rows:
+        ids=set(_evidence_ids(row['evidence']))
+        current=[c for c in project['reaction_cues'] if c['id'] in ids]
+        latest=max(c['end'] for c in current) if current else row['end']
+        prior=[c for c in eligible.values() if c['id'] not in ids and c['end']<=row['start']+.04][-6:]
+        compact=lambda c:{k:c[k] for k in ('id','start','end','text')}
+        seconds=row['end']-row['start']-.04
+        entry=dict(id=row['id'],section=row['section'],seconds=round(seconds,3),
+            target_words=round(seconds*rate),
+            source_ranges=row.get('source_ranges',[{'start':row['start'],'end':row['end']}]),
+            current_cues=[compact(c) for c in current],earlier_confirmed=[compact(c) for c in prior],
+            focus=visible_focus(outline,ids,eligible),last_known_time=latest,
+            utterance_ledger=utterance_ledger(current))
+        entries_by_id[row['id']]=entry
+        checkpoint_path=cache/(checkpoint_key(entry,project['settings'])+'.window.json')
+        checkpoint_paths[row['id']]=checkpoint_path
+        checkpoints[row['id']]=load_checkpoint(checkpoint_path)
+        accepted=checkpoints[row['id']].get('accepted')
+        if not accepted and not checkpoints[row['id']].get('rejections'):
+            for failure in reversed(state.get('failures',[])):
+                if row['id'] not in failure.get('ids',[]):
+                    continue
+                issues=[str(issue) for issue in failure.get('feedback',[]) if str(issue).startswith(row['id']+':')]
+                for issue in issues:
+                    # v0.1.20 saved the review reason but not rejected prose.
+                    # Carry the reason forward without inventing missing text.
+                    record_rejection(checkpoints[row['id']],'',issue)
+                if issues:
+                    checkpoints[row['id']]['attempts']=max(5,checkpoints[row['id']].get('attempts',0))
+                    save_checkpoint(checkpoint_path,checkpoints[row['id']])
+                break
+        migrated=state['accepted'].get(row['id'])
+        if not accepted and isinstance(migrated,str) and migrated and not quality_issue(migrated,commentary_source_text(project,row['evidence'])) and not wrong_language(migrated,project['settings']['language']):
+            # Only an EXACT old group input hash may migrate. Never scan cache
+            # files by slot ID or accept an old rejected/unreviewed paragraph.
+            accepted=migrated
+            checkpoints[row['id']]['accepted']=accepted
+            save_checkpoint(checkpoint_path,checkpoints[row['id']])
+        if isinstance(accepted,str) and accepted and not quality_issue(accepted) and not wrong_language(accepted,project['settings']['language']):
+            state['accepted'][row['id']]=accepted
+            metrics['reused_windows']+=1
     for offset in range(0,len(rows),3):
         group = rows[offset:offset+3]
         for row in group:
@@ -425,22 +486,13 @@ def write(plan, project, outline, ask_ai, folder, report, check, *, only_ids=Non
             check()
             state['generation'] += 1
             save()
-            entries = []
-            for row in pending:
-                ids = set(_evidence_ids(row['evidence']))
-                current = [c for c in project['reaction_cues'] if c['id'] in ids]
-                # Never expose cues later than the current review window.
-                latest = max(c['end'] for c in current) if current else row['end']
-                prior = [c for c in eligible.values() if c['id'] not in ids and c['end']<=row['start']+.04][-6:]
-                compact = lambda c:{k:c[k] for k in ('id','start','end','text')}
-                seconds = row['end']-row['start']-.04
-                entries.append({'id':row['id'], 'section':row['section'], 'seconds':round(seconds,3),
-                    'target_words':round(seconds*rate),
-                    'source_ranges':row.get('source_ranges',[{'start':row['start'],'end':row['end']}]),
-                    'current_cues':[compact(c) for c in current], 'earlier_confirmed':[compact(c) for c in prior],
-                    'focus':visible_focus(outline,ids,eligible),
-                    'last_known_time':latest})
-            repair_mode = ('Conservative evidence repair: remove unsupported claims, retain explicitly confirmed facts separately from uncertain claims. No generic filler. ' if attempt >= 3 else '')
+            entries=[copy.deepcopy(entries_by_id[r['id']]) for r in pending]
+            for entry in entries:
+                cp=checkpoints[entry['id']]
+                entry['repair_constraints']=repair_constraints(cp)
+                cp['attempts']=cp.get('attempts',0)+1
+                save_checkpoint(checkpoint_paths[entry['id']],cp)
+            repair_mode = ('Conservative evidence repair: remove unsupported claims, retain explicitly confirmed facts separately from uncertain claims. No generic filler. ' if attempt >= 3 or any(checkpoints[r['id']].get('rejections') for r in pending) else '')
             prompt = (RULE+'\n'+repair_mode+f'\nOUTPUT LANGUAGE: {project["settings"]["language"]}. '
                       'Write every requested ID once. Cite supporting current/earlier cue IDs in source_cue_ids only; '
                       'never put IDs or time in spoken text. Add a grounded logical explanation, not just a transcript '
@@ -453,6 +505,7 @@ def write(plan, project, outline, ask_ai, folder, report, check, *, only_ids=Non
                       '\nREJECTED TEXT (correct, never reuse unchanged): '+json.dumps(rejected,ensure_ascii=False))
             report(92, f'Viết và kiểm tra full review {offset+1}–{offset+len(group)}/{len(rows)}…')
             try:
+                metrics['writer_calls']+=1
                 answer = ReviewText.model_validate(ask_ai(prompt,[],project['settings'],folder,check,ReviewText)).model_dump()
             except ValidationError:
                 errors = ['Return the required items schema with nonempty text and current source_cue_ids.']
@@ -467,12 +520,28 @@ def write(plan, project, outline, ask_ai, folder, report, check, *, only_ids=Non
                     errors.append(row['id']+': return exactly once');continue
                 line = replies[0]
                 text = clean_narration(line['text'].strip())
+                history=checkpoints[row['id']].get('rejections',[])
+                previous=next((h for h in reversed(history) if h['text']==text),None)
+                if previous:
+                    metrics['repeated_drafts']+=1
+                    errors.append(row['id']+': unchanged rejected text; '+previous['issue'])
+                    rejected[row['id']]=text
+                    report(92,f'{row["id"]}: AI lặp lời đã bị loại; dùng lại phản hồi, không gọi kiểm chứng trùng…')
+                    continue
                 allowed = {c['id'] for c in entry['current_cues']+entry['earlier_confirmed']}
                 if not set(line['source_cue_ids']) <= allowed or not set(line['source_cue_ids']) & {c['id'] for c in entry['current_cues']}:
-                    errors.append(row['id']+': cite current evidence, no unknown/future IDs');continue
+                    issue='cite current evidence, no unknown/future IDs'
+                    errors.append(row['id']+': '+issue)
+                    record_rejection(checkpoints[row['id']],text,issue)
+                    save_checkpoint(checkpoint_paths[row['id']],checkpoints[row['id']])
+                    continue
                 issue = quality_issue(text, commentary_source_text(project,row['evidence']))
                 if issue or wrong_language(text,project['settings']['language']):
-                    errors.append(row['id']+': '+str(issue or 'wrong language'));continue
+                    issue=str(issue or 'wrong language')
+                    errors.append(row['id']+': '+issue)
+                    record_rejection(checkpoints[row['id']],text,issue)
+                    save_checkpoint(checkpoint_paths[row['id']],checkpoints[row['id']])
+                    continue
                 candidates.append({**entry,'text':text,'cited_ids':line['source_cue_ids']})
             if candidates:
                 check()
@@ -481,28 +550,52 @@ def write(plan, project, outline, ask_ai, folder, report, check, *, only_ids=Non
                     'Reject unsupported causality, factual invention, previewing later events, source-narrator claims, '
                     'changed numbers/negations, copied or impersonated dialogue, or generic filler without useful '
                     'synthesis/reasoning. Accept grounded explanation and attributed uncertainty. Return one verdict '
-                    'per ID; do not impose a word-count estimate as an audio-duration test.\n'+RULE+
+                    'per ID with supported_facts (each statement cites attached cue IDs), forbidden_claims '
+                    'and required_points for targeted repair. Give concrete corrections: preserve who '
+                    'said/planned/requested an action; distinguish possible charges from filed charges. '
+                    'For valid paragraphs use empty correction arrays. For rejected paragraphs return '
+                    'at most 3 supported facts, 3 forbidden claims and 3 required points. '
+                    'Do not impose a word-count estimate as an audio-duration test.\n'+RULE+
                     '\nREQUESTED: '+json.dumps(candidates,ensure_ascii=False))
                 try:
+                    metrics['review_calls']+=1
                     verdicts = ReviewCheck.model_validate(ask_ai(review_prompt,[],project['settings'],folder,check,ReviewCheck)).model_dump()['items']
                 except ValidationError:
                     errors.append('Return valid factual-review verdicts for every requested ID.')
                     continue
                 for item in candidates:
                     matches = [v for v in verdicts if v['id']==item['id']]
-                    if len(matches)==1 and matches[0]['valid']:
+                    allowed={c['id'] for c in item['current_cues']+item['earlier_confirmed']}
+                    valid_contract=len(matches)==1 and all(set(f['source_cue_ids'])<=allowed for f in matches[0]['supported_facts'])
+                    if valid_contract and matches[0]['valid']:
                         state['accepted'][item['id']] = item['text']
+                        checkpoints[item['id']]['accepted']=item['text']
                     else:
                         rejected[item['id']] = item['text']
-                        errors.append(item['id']+': '+(matches[0]['issue'] if len(matches)==1 else 'missing review verdict'))
+                        issue=(matches[0]['issue'] if valid_contract else 'missing/invalid evidence review contract')
+                        errors.append(item['id']+': '+issue)
+                        contract=({k:matches[0][k] for k in ('supported_facts','forbidden_claims','required_points')} if valid_contract else {})
+                        record_rejection(checkpoints[item['id']],item['text'],issue,contract)
+                        report(92,f'{item["id"]}: kiểm chứng chưa đạt · {issue[:240]}')
+                    save_checkpoint(checkpoint_paths[item['id']],checkpoints[item['id']])
             save()
+            if any(r['id'] not in state['accepted'] for r in group):
+                report(92,f'Full review chưa đạt sau {attempt+1}/5 lượt; đã lưu phản hồi riêng để tiếp tục.')
         if any(r['id'] not in state['accepted'] for r in group):
             state.setdefault('failures', []).append({
                 'ids': [r['id'] for r in group if r['id'] not in state['accepted']],
                 'feedback': errors, 'generation': state['generation']})
             save()
+            metrics['seconds']=round(time.monotonic()-started,3)
+            project.setdefault('analysis_stats',{})['review_writer']=metrics
+            report(92,f'Đã lưu checkpoint review · {metrics["writer_calls"]} lượt viết, '
+                      f'{metrics["review_calls"]} lượt kiểm chứng · {metrics["seconds"]:.1f}s.')
             raise ValueError('Full review chưa đạt kiểm tra chứng cứ sau 5 lượt sửa riêng: '
                              + ' '.join(errors)[:1200])
         for row in group:
             set_text(plan,row['id'],state['accepted'][row['id']])
+    metrics['seconds']=round(time.monotonic()-started,3)
+    project.setdefault('analysis_stats',{})['review_writer']=metrics
+    report(94,f'Full review đạt · {metrics["writer_calls"]} lượt viết, {metrics["review_calls"]} lượt kiểm chứng, '
+              f'dùng lại {metrics["reused_windows"]} đoạn · {metrics["seconds"]:.1f}s.')
     return plan

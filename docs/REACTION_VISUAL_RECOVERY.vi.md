@@ -4,6 +4,8 @@ Ngày 2026-10-08. Tài liệu này cập nhật quy tắc cứng của bản v0.
 `REACTION_VISUAL_CUT_PLAN.vi.md`: một cảnh máy quay có thể chứa nhiều diễn biến,
 nhưng chia đôi liền nhau một cảnh không tạo ra chuyển hình thật.
 
+Cập nhật tiếp sau log v0.1.20: xem [luồng cân cửa sổ và sửa theo chứng cứ](REACTION_REVIEW_CAPACITY_FLOW.vi.md).
+
 ## Luồng mới
 
 Nguồn → đọc hiểu/phân loại → dàn ý/chọn cue → tạo lịch cửa sổ đọc → **kiểm tra

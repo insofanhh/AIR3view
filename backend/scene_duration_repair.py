@@ -55,7 +55,10 @@ def adjust(project,narration,measured,target,diagnostics=None):
         if diagnostics is not None and reason not in diagnostics:diagnostics.append(reason)
     from .reaction_dubbing import active as dubbing_active
     from .reaction_review import active as review_active
-    if dubbing_active(project['settings']) or review_active(project['settings']):
+    if review_active(project['settings']):
+        from .reaction_visual_recovery import fit_measured_review
+        return fit_measured_review(project,narration,measured,diagnostics)
+    if dubbing_active(project['settings']):
         reject('Giữ lịch cảnh/hội thoại đã khóa; sửa riêng lời lồng tiếng hoặc commentary, không chiếm cảnh của lượt nói khác.')
         return None
     if (project['settings'].get('production_workflow')!='plan_first' or not project.get('story_plan')

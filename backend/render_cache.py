@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import av
@@ -129,12 +130,28 @@ def signature(path):
                 str(v.time_base),digest((v.codec_context.extradata or b'').hex()))
 
 
+def source_silent(project,timeline,part):
+    """Don't open/decode hundreds of source audio inputs that are fully muted."""
+    if not project['metadata']['has_audio'] or project['settings']['original_volume']<=0:
+        return True
+    cursor=part['start']
+    for row in sorted(timeline.get('source_mutes',[]),key=lambda r:r['start']):
+        if row['end']<=cursor:
+            continue
+        if row['start']>cursor+1e-6:
+            return False
+        cursor=max(cursor,row['end'])
+        if cursor>=part['end']-1e-6:
+            return True
+    return False
+
+
 def mix_audio(project,timeline,part,folder,check,progress):
     """Mix continuously to PCM; encode AAC only once after all video chunks."""
     s=project['settings'];filters=[];streams=[];args=[FFMPEG,'-y'];inputs=0
     source=store.asset(project['id'],project['source']['file'])
     clips=slice_clips(timeline,part['start'],part['end'],'audio_clips')
-    if project['metadata']['has_audio'] and s['original_volume']>0:
+    if not source_silent(project,timeline,part):
         for i,c in enumerate(clips):
             length=c['end']-c['start']
             if c['kind']=='freeze':
@@ -196,6 +213,7 @@ def render_workers(width,encoder,count):
 
 
 def render_cached(project,report,check,preview=False,preview_start=0):
+    render_started=time.monotonic()
     from . import render as renderer
     from .reaction_visual import prepare
     project = prepare(project, report, check)
@@ -337,5 +355,7 @@ def render_cached(project,report,check,preview=False,preview_start=0):
         save_json(folder/'timeline.json',timeline)
         completed+=part['duration']
     project['warnings']=list(dict.fromkeys(project['warnings']+timeline['warnings']))
+    project.setdefault('analysis_stats',{})['render']=dict(seconds=round(time.monotonic()-render_started,3),
+        output_seconds=total,encoder=encoder,parts=[e['cache'] for e in exports])
     report(100,f'Đã xuất bản xem thử {total:.1f}s' if preview else 'Đã xuất video')
     return store.save(project)
