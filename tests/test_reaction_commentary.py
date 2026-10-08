@@ -140,7 +140,7 @@ def test_voice_can_cross_cuts_and_original_subtitles_return_when_it_ends():
         n.update(text='The question stays open. The exchange continues.', audio='voices/test.wav', duration=7,
                  cues=[dict(id='ai', start=0, end=7, text='The question stays open. The exchange continues.')])
         n['audio_hash'] = voice_hash(n, p['settings'])
-    timeline = build_story(p, strict=True)
+    timeline = build_story(p, strict=True, visual=False)
     assert len(timeline['clips']) == len(plan['selections'])
     assert len(timeline['voices']) == 3
     assert all(v['end']-v['start'] > 2 for v in timeline['voices'])
@@ -152,7 +152,7 @@ def test_voice_can_cross_cuts_and_original_subtitles_return_when_it_ends():
     p['narrations'][0]['duration'] = p['narrations'][0]['target_duration']+2
     p['narrations'][0]['audio_hash'] = voice_hash(p['narrations'][0], p['settings'])
     with pytest.raises(ValueError, match='dài hơn cảnh'):
-        build_story(p, strict=True)
+        build_story(p, strict=True, visual=False)
 
 
 @pytest.mark.parametrize('language', ['English', 'Vietnamese'])
@@ -248,7 +248,7 @@ def test_real_render_voice_survives_short_cuts_and_source_sound_returns(tmp_path
     n = p['narrations'][0]
     n.update(text='The question stays unresolved. The exchange continues.', audio='voice.wav', duration=8)
     n['audio_hash'] = voice_hash(n, p['settings'])
-    timeline = build_story(p, strict=True)
+    timeline = build_story(p, strict=True, visual=False)
     assert len(timeline['clips']) == 12
     output = render_part(p, timeline, timeline['parts'][0], folder, lambda:None, width=360)
     with av.open(str(store.asset(p['id'], output['file']))) as container:

@@ -15,9 +15,11 @@ def instructions(settings):
     if not bounds:
         return ''
     low, high = bounds
-    return (f'\nOPTIONAL SCENE DURATION: prefer {low:g}–{high:g} seconds per continuous '
-            'source selection, excluding the separately configured hook. This is an editorial '
-            'preference, not a hard validity requirement. Evidence and complete exchanges take '
+    return (f'\nVISUAL CUT DURATION: the final independent picture edit requires {low:g}–{high:g} '
+            'seconds per real source shot, excluding the separately configured hook. '
+            'Do not fake cuts by dividing one continuous shot into adjacent pieces. '
+            'The selections below are logical evidence/audio ranges, not final picture cuts. '
+            'Evidence and complete exchanges take '
             'priority, then chapter coverage and total duration, then scene length. Select events '
             'first and adjust boundaries only on complete source cues. Keep a question with its '
             'answer when possible. Never cross excluded narration, uncertain speech or a new '
@@ -27,7 +29,8 @@ def instructions(settings):
             'is NOT the voice word budget. Reserve enough clean evidenced footage for natural '
             'speech across those cuts, without adding excluded source gaps to the output. '
             'and existing two-sentence style; 11–16 seconds of voice remains a reference, not '
-            'the length of every scene. Whole-cue exceptions may be shorter or longer. '
+            'the length of every scene. Logical whole-cue ranges may be shorter or longer; '
+            'the final picture edit has no whole-cue duration exceptions. '
             'A narrated selection must still fit the existing 25-second technical ceiling.\n')
 
 

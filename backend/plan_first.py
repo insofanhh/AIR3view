@@ -153,7 +153,7 @@ def lock_schedule(raw, project, report):
 
 
 def contract_check(project):
-    from .story import plan_fingerprint, validate_plan
+    from .story import plan_fingerprint, plan_is_current, validate_plan
     from .retention import VERSION as RETENTION_VERSION
     from .story_bridges import VERSION as BRIDGE_VERSION
     settings = project['settings']
@@ -162,6 +162,7 @@ def contract_check(project):
     manifest = project.get('duration_plan') or {}
     if not settings.get('output_mode'):
         return
+    plan_is_current(project)  # Migrate exact old visual signatures before TTS too.
     if (manifest.get('status') != 'ready' or (settings.get('original_dialogue_ratio',.15)>.5 and
             (manifest.get('retention_policy_version') != RETENTION_VERSION or manifest.get('story_bridge_version') != BRIDGE_VERSION))
             or manifest.get('input_fingerprint') != plan_fingerprint(project)

@@ -128,9 +128,9 @@ def split_parts(duration, settings, cues, voices):
     return parts
 
 
-def slice_clips(timeline, start, end):
+def slice_clips(timeline, start, end, track='clips'):
     result = []
-    for c in timeline['clips']:
+    for c in timeline.get(track, timeline['clips']):
         a, b = max(start, c['start']), min(end, c['end'])
         if b <= a:
             continue
@@ -177,7 +177,7 @@ def reaction_subtitle_rows(project):
     return rows
 
 
-def build_story(project, strict=False):
+def build_story(project, strict=False, *, visual=True):
     import copy
     from .story import storytelling, validate_narration_budget
     settings = project['settings']
@@ -336,4 +336,7 @@ def build_story(project, strict=False):
     for part in parts[:-1]:
         if any(v['start']<part['end']<v['end'] for v in result['voices']):
             raise ValueError('Lời AI vượt ranh giới phần; rút ngắn lời trước khi xuất.')
+    if visual:
+        from .reaction_visual import apply
+        return apply(project, result, strict=strict)
     return result

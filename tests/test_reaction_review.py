@@ -88,16 +88,18 @@ def test_zero_is_review_toggle_and_does_not_enable_character_dubbing():
 
 
 @pytest.mark.parametrize('seconds',[1,2,6,25])
-def test_visual_cuts_independent_of_complete_source_words(seconds):
+def test_logical_evidence_rows_do_not_change_with_visual_cut_setting(seconds):
     p,plan=fixture(length=12,count=4)
     p['settings'].update(reaction_scene_duration_mode='range',reaction_scene_min_seconds=1,
                          reaction_scene_max_seconds=seconds)
     locked=reaction_cops.validate_plan(prepare(plan,p),p,check_text=False)
     assert sum(r['end']-r['start'] for r in locked['selections'])==pytest.approx(48)
-    assert all(1-.001<=r['end']-r['start']<=seconds+.001 for r in locked['selections'])
+    # Logical rows feed the fixed voice schedule. Final picture duration and
+    # real source-shot changes are verified separately in test_reaction_visual.
+    assert all(1-.001<=r['end']-r['start']<=6+.001 for r in locked['selections'])
     assert all(w['end']-w['start']<=25.001 for w in slots(locked) if w['narration'])
     assert {r['id'] for i,r in enumerate(locked['selections']) if r['narration'] for r in members(locked,i)} == {r['id'] for r in locked['selections']}
-    if seconds<6:assert any(r.get('commentary_span',1)>1 for r in locked['selections'])
+    assert any(r.get('commentary_span',1)>1 for r in locked['selections'])
 
 
 def test_default_visual_cuts_and_more_than_ten_review_windows():

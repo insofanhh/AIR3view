@@ -88,6 +88,31 @@ def probe(path):
         return {'duration': duration, 'width': video.width if video else 0, 'height': video.height if video else 0, 'fps': float(video.average_rate or 30) if video else 0, 'has_audio': audio is not None}
 
 
+def ensure_shots(project, report=lambda *args: None, check=lambda: None):
+    """Reuse persisted pixel-detected shots, including projects made before this edit."""
+    if project.get('shots'):
+        from .reaction_visual import shots, VisualConstraintError
+        try:
+            shots(project)
+            return project['shots']
+        except VisualConstraintError:
+            pass  # Rebuild an incomplete/stale index once from source pixels.
+    from scenedetect import detect, AdaptiveDetector
+    folder = store.project_dir(project['id'])
+    path = folder / 'proxy.mp4'
+    if not path.is_file():
+        path = store.asset(project['id'], project['source']['file'])
+    report(0, 'Lập chỉ mục chuyển cảnh thật của nguồn (chỉ thực hiện một lần)…')
+    check()
+    scenes = detect(str(path), AdaptiveDetector(min_scene_len=30), show_progress=False)
+    check()
+    ranges = [(a.get_seconds(), b.get_seconds()) for a, b in scenes]
+    project['shots'] = [{'start': a, 'end': b} for a, b in ranges] or [
+        {'start': 0, 'end': project['metadata']['duration']}]
+    store.save(project)
+    return project['shots']
+
+
 def prepare(project, report, check):
     folder = store.project_dir(project['id'])
     source = project['source']
@@ -133,10 +158,7 @@ def prepare(project, report, check):
     if not project['frames']:
         report(48, 'Tìm chuyển cảnh và lấy khung hình…')
         import cv2
-        from scenedetect import detect, AdaptiveDetector
-        scenes = detect(str(folder / 'proxy.mp4'), AdaptiveDetector(min_scene_len=30), show_progress=False)
-        check()
-        ranges = [(a.get_seconds(), b.get_seconds()) for a, b in scenes] or [(0, metadata['duration'])]
+        ranges = [(s['start'], s['end']) for s in ensure_shots(project, lambda _, msg: report(48, msg), check)]
         # Long continuous shots also need temporal coverage, not just a thumbnail.
         times = {0.1}
         for start, end in ranges:
@@ -161,6 +183,8 @@ def prepare(project, report, check):
         cap.release()
         project['frames'] = frames
         project['shots'] = [{'start': a, 'end': b} for a, b in ranges]
+    elif not project.get('shots'):
+        ensure_shots(project, lambda _, msg: report(48, msg), check)
     if source['kind'] == 'youtube' and not project['transcript']:
         try_source_subtitles(project, report, check)
     report(95, 'Nguồn đã sẵn sàng')

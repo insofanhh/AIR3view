@@ -1055,13 +1055,10 @@ def plan_reaction(project, report, check):
             narration_profile='full_review', review_outline=candidate['reaction_review_outline'],
             review_scene_bounds=list(scene_bounds(settings)))
     if scene_stats is not None:
+        scene_stats['track'] = 'logical_evidence'
         candidate['duration_plan']['reaction_scene_duration'] = scene_stats
-        if scene_stats['exceptions']:
-            candidate.setdefault('warnings', []).append(
-                f'Reaction COPS: {len(scene_stats["exceptions"])}/{scene_stats["scene_count"]} cảnh ngoài '
-                f'khoảng {scene_stats["min_seconds"]:g}–{scene_stats["max_seconds"]:g} giây; '
-                'giữ ranh giới cue/hội thoại sạch, không cắt ngang hoặc kéo dài để ép thời lượng. '
-                'Chi tiết nguồn và thời lượng được lưu trong kế hoạch cảnh.')
+        # These are logical source/audio spans, not the final picture shots.
+        # Visual timing is checked by reaction_visual before TTS/render.
     contract_check(candidate)
     check()
     return candidate

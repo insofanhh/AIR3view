@@ -257,19 +257,24 @@ CHỌN DIỄN BIẾN THEO CHƯƠNG CÂU CHUYỆN
 THỜI LƯỢNG CẢNH — TÙY CHỌN CỦA AIR3VIEW
 - SCENE_DURATION_MODE mặc định là auto: giữ quy trình chọn và dựng hiện tại.
   Khi mode=range, tool cung cấp SCENE_MIN_SECONDS và SCENE_MAX_SECONDS (1–25).
-  Ưu tiên mỗi đoạn nguồn liên tục trong khoảng này. “Cảnh” không phải cue phụ
-  đề hoặc một commentary; hook có thời lượng riêng và không chịu khoảng này.
+  Mỗi visual cut cuối cùng phải nằm trong khoảng này theo frame 30 fps, lấy từ
+  một shot nguồn thật khác shot liền trước. Không chia đôi một shot rồi nối A/B.
+  “Cảnh hình” không phải cue phụ đề, selection dẫn chứng hay một commentary;
+  hook có thời lượng riêng và không chịu khoảng này.
 - Chọn diễn biến và bằng chứng trước, điều chỉnh ranh giới cảnh sau. Thứ tự
   ưu tiên: chứng cứ đúng → hiểu đủ hội thoại/diễn biến → chương quan trọng →
-  thời lượng tổng → khoảng thời lượng cảnh. Không chia đều timeline.
+  thời lượng tổng. Lịch hình riêng kiểm tra khoảng cảnh bắt buộc trước render;
+  không chia đều một đoạn nguồn rồi coi đó là nhiều chuyển cảnh thật.
 - Chỉ ghép cue liền kề sạch, cùng diễn biến; không vượt lời dẫn nguồn, lời
   chưa rõ vai trò, sự kiện mới hoặc khoảng nghỉ lớn hơn 1,5 giây để lấp cảnh.
-  Chỉ tách tại ranh giới cue trọn vẹn; ưu tiên cuối lượt nói và giữ cặp hỏi–đáp.
-  Không cắt ngang câu nói, câu trả lời quyết định hoặc hành động cần ngữ cảnh.
-- Khoảng thời lượng là mục tiêu biên tập. Nếu không có điểm cắt an toàn, cho
-  phép cảnh ngắn/dài hơn và tool ghi nhận ngoại lệ. Cửa sổ commentary vẫn
-  chịu giới hạn kỹ thuật 25 giây; cảnh dài không có chỗ cho voice được giữ
-  tiếng gốc, không ép thêm commentary để đạt setting.
+  Lịch âm thanh/dẫn chứng ưu tiên cue trọn vẹn, giữ lượt nói và cặp hỏi–đáp;
+  lịch hình độc lập để đổi shot mà không cắt đứt audio, phụ đề hoặc ý nghĩa.
+- Range là ràng buộc cảnh hình; selection dẫn chứng có thể dài hơn để hiểu
+  trọn trao đổi. Nếu nguồn chỉ có một shot hoặc không đủ shot cùng dẫn chứng,
+  báo cụ thể cửa sổ thiếu trước tạo giọng/render; không tự lấy cảnh khác vụ việc,
+  kéo voice hay render sai setting. Cho người dùng tăng khoảng hoặc dùng auto.
+  Cửa sổ commentary vẫn tối đa 25 giây; không thêm commentary để đạt khoảng.
+  Xuất theo phần có thể cắt một cảnh ở mép file; đó không phải shot nguồn mới.
 - Chia footage không tạo thêm commentary. Không lặp cảnh, đệm im lặng,
   kéo tốc độ voice hoặc viết thêm câu rỗng để đạt thời lượng. Số commentary,
   cách chọn bước ngoặt và văn phong bên dưới giữ nguyên. Nhịp voice 11–16

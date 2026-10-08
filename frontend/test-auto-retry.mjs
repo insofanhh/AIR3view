@@ -27,3 +27,9 @@ test('schema failures never trigger duration retry even with misleading log text
   assert.equal(isRetryableDurationFailure(job),false);
   assert.equal(canAutoRetryDuration(job,0),false);
 });
+
+test('impossible picture constraints do not retry voices even if older duration errors are logged',()=>{
+  const job={state:'failed',error:'[visual:insufficient_distinct_shots] sel429 '+error};
+  assert.equal(isRetryableDurationFailure(job),false);
+  assert.equal(canAutoRetryDuration(job,0),false);
+});

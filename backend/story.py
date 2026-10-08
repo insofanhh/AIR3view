@@ -312,7 +312,7 @@ def legacy_plan_fingerprint(project):
                    'transcript':[{k:c[k] for k in ('start','end','text')} for c in transcript]})
 
 
-def plan_fingerprint(project):
+def plan_fingerprint(project, *, legacy_visual=False):
     """Compare the effective editorial inputs, not JSON number formatting or
     controls belonging to an inactive output mode."""
     from .providers import digest
@@ -325,7 +325,7 @@ def plan_fingerprint(project):
     names += ['summary_seconds'] if s.get('output_mode') == 'single' else ['part_count', 'part_seconds']
     if reaction_cops(s):
         names += ['narration_style', 'reaction_commentary_count', 'reaction_audio_mode']
-        if s.get('reaction_scene_duration_mode') == 'range':
+        if legacy_visual and s.get('reaction_scene_duration_mode') == 'range':
             names += ['reaction_scene_duration_mode', 'reaction_scene_min_seconds',
                       'reaction_scene_max_seconds']
     elif storytelling(s):
@@ -352,7 +352,7 @@ def plan_fingerprint(project):
         from .reaction_review import active as review_active, VERSION as REVIEW_VERSION
         if review_active(s):
             payload['reaction_review_version'] = REVIEW_VERSION
-        if s.get('reaction_scene_duration_mode') == 'range':
+        if not legacy_visual or s.get('reaction_scene_duration_mode') == 'range':
             from .reaction_commentary import VERSION as WINDOW_VERSION
             payload['reaction_commentary_window_version'] = WINDOW_VERSION
     if workflow == 'plan_first':
@@ -373,6 +373,14 @@ def plan_is_current(project):
     if not project.get('story_plan'):
         return False
     saved = project.get('plan_fingerprint')
+    if reaction_cops(project['settings']) and saved == plan_fingerprint(project, legacy_visual=True):
+        # Migrate only an EXACT old input match, before edits. Never bless a
+        # stale plan after changing language, voice, facts, count, or hook.
+        current = plan_fingerprint(project)
+        manifest = project.get('duration_plan') or {}
+        if manifest.get('input_fingerprint') == saved:
+            manifest['input_fingerprint'] = current
+        project['plan_fingerprint'] = saved = current
     # Accept an existing plan only when its old inputs still match exactly.
     return saved == plan_fingerprint(project) or (not reaction_cops(project['settings'])
                                                  and saved == legacy_plan_fingerprint(project))

@@ -118,6 +118,8 @@ def work():
                     with stage_slot(AI_LIMIT, check):
                         project = providers.localize(project, report, check)
                 if kind in ('voice', 'language', 'all') or kind.startswith('voice:'):
+                    from .reaction_visual import prepare as prepare_visual
+                    project = prepare_visual(project, report, check)
                     if kind == 'all' and not project['narrations']:
                         from .story import source_led
                         if source_led(project):
@@ -143,6 +145,8 @@ def work():
                             project['settings']=Settings.model_validate(project['settings']).model_dump()
                             store.save(project)
                         if kind in ('render', 'preview', 'export'):
+                            from .reaction_visual import prepare as prepare_visual
+                            project = prepare_visual(project, report, check)
                             project = providers.prepare_render_audio(project, report, check)
                         if project['settings'].get('subtitle_highlight', True):
                             build(project, strict=True)

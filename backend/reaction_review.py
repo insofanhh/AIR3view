@@ -160,9 +160,13 @@ def quality_issue(text, source_text='', seconds=0, language='English'):
 
 
 def prepare(raw, project):
-    """Split visuals only, then cover every cut with a bounded narration window."""
+    """Build logical evidence/audio rows; actual shots live in visual_edit."""
     from .reaction_cops import _evidence_ids
     low, high = scene_bounds(project['settings'])
+    if project['settings'].get('reaction_scene_duration_mode') == 'range':
+        # These subdivisions only bound voice windows. Changing picture timing
+        # must not change the accepted text, voice cadence, or their cache keys.
+        low, high = 4, 6
     plan = copy.deepcopy(raw)
     plan.pop('dialogue_dubs', None)
     plan.pop('hook_dub', None)

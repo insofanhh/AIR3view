@@ -291,6 +291,8 @@ def render_part(project, timeline, part, folder, check, width=1080, *, video_onl
     source = store.asset(project['id'], project['source']['file'])
     name = write_subtitles(folder, project, timeline, part)
     clips = slice_clips(timeline, part['start'], part['end'])
+    separate_audio = not video_only and 'audio_clips' in timeline
+    audio_clips = slice_clips(timeline, part['start'], part['end'], 'audio_clips') if separate_audio else []
     voices = [] if video_only else [v for v in timeline['voices'] if v['end'] > part['start'] and v['start'] < part['end']]
     # Give each clip its own bounded, seeked input. Reusing one decoded input
     # for a later hook followed by an earlier source section made concat buffer
@@ -303,6 +305,12 @@ def render_part(project, timeline, part, folder, check, width=1080, *, video_onl
         length = .1 if c['kind'] == 'freeze' else c['end'] - c['start']
         starts.append(point - seek)
         args += ['-threads', '1', '-ss', f'{seek:.6f}', '-t', f'{length+point-seek+.2:.6f}', '-i', str(source)]
+    audio_starts = []
+    for c in audio_clips:
+        point = c['source_start']
+        seek = max(0, point-.1)
+        audio_starts.append(point-seek)
+        args += ['-threads', '1', '-ss', f'{seek:.6f}', '-t', f'{c["end"]-c["start"]+point-seek+.2:.6f}', '-i', str(source)]
     for voice in voices:
         args += ['-i', str(store.asset(project['id'], voice['audio']))]
     filters, streams = [], []
@@ -318,10 +326,18 @@ def render_part(project, timeline, part, folder, check, width=1080, *, video_onl
                 filters.append(f'[{i}:a]atrim=start={start:.6f}:duration={length:.6f},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,apad,atrim=duration={length:.6f}[a{i}]')
             else:
                 filters.append(f'anullsrc=r=48000:cl=stereo,atrim=duration={length:.6f}[a{i}]')
-        if video_only:
+        if video_only or separate_audio:
             filters=[f for f in filters if not f.endswith(f'[a{i}]')]
-        streams.append(f'[v{i}]' if video_only else f'[v{i}][a{i}]')
-    filters.append(''.join(streams) + (f'concat=n={len(clips)}:v=1:a=0[video]' if video_only else f'concat=n={len(clips)}:v=1:a=1[video][original]'))
+        streams.append(f'[v{i}]' if video_only or separate_audio else f'[v{i}][a{i}]')
+    filters.append(''.join(streams) + (f'concat=n={len(clips)}:v=1:a=0[video]' if video_only or separate_audio else f'concat=n={len(clips)}:v=1:a=1[video][original]'))
+    if separate_audio:
+        for i, c in enumerate(audio_clips):
+            length = c['end']-c['start']
+            if project['metadata']['has_audio'] and c['kind'] != 'freeze':
+                filters.append(f'[{len(clips)+i}:a]atrim=start={audio_starts[i]:.6f}:duration={length:.6f},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,apad,atrim=duration={length:.6f}[original{i}]')
+            else:
+                filters.append(f'anullsrc=r=48000:cl=stereo,atrim=duration={length:.6f}[original{i}]')
+        filters.append(''.join(f'[original{i}]' for i in range(len(audio_clips)))+f'concat=n={len(audio_clips)}:v=0:a=1[original]')
     color = '#ffffff' if settings.get('layout_preset') == 'news_slide' else settings['background']
     if settings['background_mode'] == 'blur' and settings.get('layout_preset') != 'news_slide':
         bw,bh=even(270),even(480)
@@ -372,11 +388,11 @@ def render_part(project, timeline, part, folder, check, width=1080, *, video_onl
         a = max(0, part['start'] - v['start'])
         b = min(v['end'] - v['start'], part['end'] - v['start'])
         delay = max(0, round((v['start'] - part['start']) * 48000))
-        filters.append(f'[{i+len(clips)}:a]atrim=start={a:.6f}:end={b:.6f},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,volume={settings["voice_volume"]},adelay={delay}S:all=1[voice{i}]')
+        filters.append(f'[{i+len(clips)+len(audio_clips)}:a]atrim=start={a:.6f}:end={b:.6f},asetpts=PTS-STARTPTS,aresample=48000,aformat=channel_layouts=stereo,volume={settings["voice_volume"]},adelay={delay}S:all=1[voice{i}]')
         mix.append(f'[voice{i}]')
     if not video_only:
         from .music import append_mix
-        append_mix(project, part, args, filters, mix, len(clips) + len(voices))
+        append_mix(project, part, args, filters, mix, len(clips) + len(audio_clips) + len(voices))
     filters.append(''.join(mix) + f'amix=inputs={len(mix)}:duration=first:normalize=0,alimiter=limit=0.95:latency=1[outa]')
     if video_only:
         filters=filters[:video_filter_count]

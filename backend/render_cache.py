@@ -67,9 +67,9 @@ def chunks(timeline,part):
     return rows
 
 
-def clip_key(timeline,part):
+def clip_key(timeline,part,track='clips'):
     return [dict(kind=c['kind'],source_start=round(c['source_start'],6),source_end=round(c['source_end'],6),
-                 duration=ticks(c['end']-c['start'])) for c in slice_clips(timeline,part['start'],part['end'])]
+                 duration=ticks(c['end']-c['start'])) for c in slice_clips(timeline,part['start'],part['end'],track)]
 
 
 def ranges(timeline,name,part):
@@ -106,7 +106,7 @@ def audio_key(project,timeline,part):
                  file=file_identity(store.asset(project['id'],v['audio']))) for v in timeline['voices']
             if v['start']<part['end'] and v['end']>part['start']]
     return digest(dict(version=VERSION,source=file_identity(store.asset(project['id'],project['source']['file'])),
-        clips=clip_key(timeline,part),samples=round(part['duration']*48000),has_audio=project['metadata']['has_audio'],
+        clips=clip_key(timeline,part,'audio_clips'),samples=round(part['duration']*48000),has_audio=project['metadata']['has_audio'],
         voices=voices,volume={k:settings[k] for k in ('original_volume','duck_volume','voice_volume')},
         original=ranges(timeline,'original_audio',part),muted=ranges(timeline,'source_mutes',part),music=music_key))[:32]
 
@@ -133,7 +133,7 @@ def mix_audio(project,timeline,part,folder,check,progress):
     """Mix continuously to PCM; encode AAC only once after all video chunks."""
     s=project['settings'];filters=[];streams=[];args=[FFMPEG,'-y'];inputs=0
     source=store.asset(project['id'],project['source']['file'])
-    clips=slice_clips(timeline,part['start'],part['end'])
+    clips=slice_clips(timeline,part['start'],part['end'],'audio_clips')
     if project['metadata']['has_audio'] and s['original_volume']>0:
         for i,c in enumerate(clips):
             length=c['end']-c['start']
@@ -197,6 +197,8 @@ def render_workers(width,encoder,count):
 
 def render_cached(project,report,check,preview=False,preview_start=0):
     from . import render as renderer
+    from .reaction_visual import prepare
+    project = prepare(project, report, check)
     timeline=build(project,strict=True)
     if not timeline['clips']:raise ValueError('Chưa có video để xuất.')
     if preview:

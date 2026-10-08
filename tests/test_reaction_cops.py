@@ -115,10 +115,10 @@ def test_auto_scene_mode_and_standard_mode_keep_existing_fingerprint():
     assert _clean_footage(project) == blocks
     assert scene_instructions(project['settings']) == ''
     project['settings']['reaction_scene_duration_mode'] = 'range'
-    assert plan_fingerprint(project) != original
+    assert plan_fingerprint(project) == original
     ranged = plan_fingerprint(project)
     project['settings']['reaction_scene_max_seconds'] = 15
-    assert plan_fingerprint(project) != ranged
+    assert plan_fingerprint(project) == ranged
     project['settings']['editorial_mode'] = 'standard'
     standard = plan_fingerprint(project)
     project['settings']['reaction_scene_min_seconds'] = 4
@@ -142,7 +142,7 @@ def test_scene_range_accepts_one_second_complete_cues():
     project['settings'].update(reaction_scene_min_seconds=1, reaction_scene_max_seconds=1)
     blocks = _clean_footage(project)
     assert [(b['start'], b['end']) for b in blocks] == [(0, 1), (1, 2), (2, 3)]
-    assert 'prefer 1–1 seconds' in scene_instructions(project['settings'])
+    assert 'requires 1–1 seconds per real source shot' in scene_instructions(project['settings'])
 
 
 def fixture():
@@ -448,11 +448,11 @@ def test_reaction_plan_first_pipeline_keeps_hook_off_and_only_eligible_cues(monk
     if scene_mode == 'range':
         stats = result['duration_plan']['reaction_scene_duration']
         assert stats['within_range'] == (3 if scene_min == 10 else 0)
-        assert f'OPTIONAL SCENE DURATION: prefer {scene_min}–20' in next(p for name,p in seen if name=='ReactionFootagePlan')
-        assert f'OPTIONAL SCENE DURATION: prefer {scene_min}–20' in next(p for name,p in seen if name=='ScheduledNarration')
+        assert f'picture edit requires {scene_min}–20' in next(p for name,p in seen if name=='ReactionFootagePlan')
+        assert f'picture edit requires {scene_min}–20' in next(p for name,p in seen if name=='ScheduledNarration')
         if scene_min == 15:
             assert len(stats['exceptions']) == 3
-            assert any('3/3 cảnh ngoài khoảng' in w for w in result['warnings'])
+            assert stats['track'] == 'logical_evidence'
     else:
         assert 'reaction_scene_duration' not in result['duration_plan']
         assert 'OPTIONAL SCENE DURATION' not in next(p for name,p in seen if name=='ReactionFootagePlan')
