@@ -231,7 +231,7 @@ def _legacy_windows(candidates, maximum):
             options[target] = chosen + ((a, b, text),)
     return sorted(options[max(options)])
 
-def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False):
+def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False, only_ids=None):
     from .source_policy import RULE, VERSION
     from .narration_text import clean_narration
     from .story import speech_rate, speech_units, validate_plan
@@ -263,6 +263,8 @@ def write_scheduled(raw, project, ask_ai, folder, report, check, *, locked=False
     hook_slot=next((x for x in slots(result) if x.get('id')=='hook'),None)
     if hook_slot:
         voiced.insert(0,('hook',hook_slot))
+    if only_ids is not None:
+        voiced = [(i,s) for i,s in voiced if s.get('id') in only_ids]
     if not voiced:
         return validate_plan(result,project,check_text=False)
     rate = speech_rate(project)

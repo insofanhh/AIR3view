@@ -142,7 +142,9 @@ def test_scene_range_accepts_one_second_complete_cues():
     project['settings'].update(reaction_scene_min_seconds=1, reaction_scene_max_seconds=1)
     blocks = _clean_footage(project)
     assert [(b['start'], b['end']) for b in blocks] == [(0, 1), (1, 2), (2, 3)]
-    assert 'requires 1–1 seconds per real source shot' in scene_instructions(project['settings'])
+    instructions=scene_instructions(project['settings'])
+    assert 'requires 1–1 seconds per evidenced picture excerpt' in instructions
+    assert 'not contiguous A/B halves' in instructions
 
 
 def fixture():
@@ -408,6 +410,9 @@ def test_reaction_plan_first_pipeline_keeps_hook_off_and_only_eligible_cues(monk
     project['settings']['provider']='openai'
     project['source_transcript']=project['transcript']
     monkeypatch.setattr(store,'project_dir',lambda _id:tmp_path)
+    # This fixture tests provider/planner contracts without a media file. The
+    # real reserve/solver integration is covered in test_reaction_visual_recovery.
+    monkeypatch.setattr('backend.reaction_visual_recovery.reserve',lambda plan,*args:plan)
     seen=[]
     plan_calls=[]
     def fake_ai(prompt,_frames,_settings,_folder,_check,schema):

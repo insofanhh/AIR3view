@@ -159,6 +159,13 @@ def extend_to_audio(project, narration, measured, diagnostics):
                 'retention': budget(checked, candidate), 'commentary_windows': audit(checked), 'status': 'ready'}
             candidate['plan_fingerprint'] = fp
             contract_check(candidate)
+            if candidate.get('shots'):
+                from .reaction_visual import active as visual_active, plan as picture_plan
+                from .reaction_visual_recovery import logical_schedule
+                if visual_active(candidate['settings']):
+                    # Do not fit a long WAV by reserving a window whose
+                    # picture schedule can no longer be built afterwards.
+                    picture_plan(candidate, logical_schedule(candidate['story_plan']))
         except (ValueError, KeyError, TypeError) as exc:
             if diagnostics is not None:
                 diagnostics.append(str(exc))

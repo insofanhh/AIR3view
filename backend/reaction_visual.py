@@ -1,8 +1,8 @@
 """An independent, frame-exact picture edit over locked editorial/audio windows.
 
 Source shots are detected from pixels, never invented by dividing selections.
-Only cited, verified event footage is eligible. An impossible source/setting
-combination is an actionable constraint error, not a reason to rewrite TTS.
+Distinct cited exchanges in a continuous shot may supply separate excerpts,
+but contiguous halves of that shot never count as a picture change.
 """
 import copy
 import math
@@ -10,16 +10,18 @@ import time
 
 from .providers import digest
 
-VERSION = 1
+VERSION = 2
 FPS = 30
+EXCERPT_GAP = 15
 
 
 class VisualConstraintError(ValueError):
     retryable = False
 
-    def __init__(self, code, detail):
+    def __init__(self, code, detail, context=None):
         self.code, self.detail = code, detail
-        super().__init__(f'[visual:{code}] {detail} Giữ nguyên kịch bản/giọng đã đạt; '
+        self.context = dict(context or {})
+        super().__init__(f'[visual:{code}] {detail} Không thể tự cân thêm trong giới hạn an toàn; '
                          'tăng khoảng thời lượng cảnh hoặc chọn Tự động rồi chạy lại.')
 
 
@@ -122,6 +124,25 @@ def _beats(project, rows):
     return beats
 
 
+def _transition(previous, candidate, length):
+    if previous is None:
+        return True
+    if candidate['a'] < previous['end']:
+        return False
+    if candidate['shot_id'] != previous['shot_id']:
+        return True
+    # Continuous bodycam footage may contain distinct developments. A new
+    # evidenced excerpt is allowed only after an actual omitted source gap;
+    # adjacent halves or repeated excerpts of the same cited speech are not.
+    return (candidate['a'] - previous['end'] >= EXCERPT_GAP and
+            set(_ids(candidate, length)).isdisjoint(previous['evidence_ids']))
+
+
+def _previous(candidate, length):
+    return dict(end=candidate['a']+length, shot_id=candidate['shot_id'],
+                evidence_ids=_ids(candidate, length))
+
+
 def _candidates(project, rows, source_shots, low, high, source_floor, last_shot):
     cues = project.get('reaction_cues', [])
     roles = project.get('source_speech', {}).get('items', [])
@@ -139,13 +160,13 @@ def _candidates(project, rows, source_shots, low, high, source_floor, last_shot)
         ranges = [(round(r['start']*FPS), round(r['end']*FPS)) for r in beat['rows']]
         ranges += [(math.ceil(verified[i]['start']*FPS), math.floor(verified[i]['end']*FPS))
                    for i in beat['ids']]
+        # Expand only already cited verified cues. Temporal proximity alone
+        # does not prove an uncited cue belongs to the same person/incident.
         allowed = _merge(ranges)
         for left, right in excluded:
             allowed = [(a, b) for x, y in allowed
                        for a, b in ((x, min(y, left)), (max(x, right), y)) if b > a]
         for shot in source_shots:
-            if shot['id'] == last_shot:
-                continue
             for a, b in allowed:
                 a, b = max(a, shot['a'], source_floor), min(b, shot['b'])
                 if b-a < low:
@@ -156,48 +177,68 @@ def _candidates(project, rows, source_shots, low, high, source_floor, last_shot)
                     continue
                 # Select around a cited action/utterance, not around an arbitrary
                 # equal subdivision. Fixed anchor ensures truncation remains cited.
-                center = max(a, min(b-low, round(evidence[0]['start']*FPS)))
-                start = min(center, b-low)
-                cap = min(high, b-start)
-                groups.setdefault(shot['id'], []).append(dict(
-                    shot_id=shot['id'], a=start, cap=cap, beat=beat_index,
-                    evidence_ids=[c['id'] for c in evidence],
-                    cue_spans=[(c['id'], c['start']*FPS, c['end']*FPS) for c in evidence],
-                    segment_ids=[r['id'] for r in beat['rows']],
-                    reason=beat['rows'][0].get('reason', 'Verified event evidence')))
-    return beats, [groups[s['id']] for s in source_shots if s['id'] in groups]
+                # Each real utterance supplies one evidence anchor, never an
+                # arbitrary grid. Also retain the first allowed start, so an
+                # anchor does not waste verified footage before the cue.
+                starts = {a, max(a, min(b-low, round(evidence[0]['start']*FPS)))}
+                starts.update(round(c['start']*FPS) for c in evidence if a <= c['start']*FPS <= b-low)
+                for start in sorted(starts):
+                    cap = min(high, b-start)
+                    candidate = dict(shot_id=shot['id'], a=start, cap=cap, beat=beat_index,
+                        cue_spans=[(c['id'], c['start']*FPS, c['end']*FPS) for c in evidence],
+                        segment_ids=[r['id'] for r in beat['rows']],
+                        reason=beat['rows'][0].get('reason', 'Verified event evidence'))
+                    candidate['previous_window'] = last_shot
+                    groups.setdefault((shot['id'], start), []).append(candidate)
+    return beats, [groups[k] for k in sorted(groups, key=lambda k:k[1])]
 
 
 def _ids(candidate, length):
+    if 'ids_by_length' in candidate:
+        return candidate['ids_by_length'].get(length, [])
     a, b = candidate['a'], candidate['a']+length
     return [identifier for identifier, left, right in candidate['cue_spans']
             if min(b, right)-max(a, left) >= min(15, right-left)-1e-6]
 
 
 def _solve(groups, total, low, high, beat_count, check):
-    """Ordered bounded knapsack: one real shot per cut, all beats, exact frames.
+    """Ordered bounded knapsack: distinct evidenced excerpts, exact frames.
 
     A reading window is <=25s, so the frame state remains small. Keeping the
     best path for (frames, evidence prefix) bounds work without AI retry loops.
     """
-    if total < low or math.ceil(total/high) > total//low:
-        raise VisualConstraintError('frame_budget',
-                                    f'Cửa sổ {total/FPS:.2f}s không chia hết thành cảnh {low/FPS:g}–{high/FPS:g}s.')
-    states = {(0, 0): ((-1, 0.0), ())}
+    incompatible = total < low or math.ceil(total/high) > total//low
+    states = {(0, 0, None): ((-1, 0.0), ())}
     for group in groups:
         check()
+        current_shot = group[0]['shot_id']
+        # Once source time enters a new physical shot, all older-shot endings
+        # have identical transition permissions. Keep their earliest path,
+        # rather than multiplying states by all 600 shots of a long review.
+        compact = {}
+        for (used, covered, ending), value in states.items():
+            key = (used, covered, ending if ending and ending[0] == current_shot else None)
+            if key not in compact or value[0] < compact[key][0]:
+                compact[key] = value
+        states = compact
+        for candidate in group:
+            candidate.pop('ids_by_length', None)
+            candidate['ids_by_length'] = {n:_ids(candidate,n)
+                for n in range(low,min(candidate['cap'],total)+1)}
         updated = dict(states)
-        for (used, covered), (cost, path) in states.items():
+        for (used, covered, _), (cost, path) in states.items():
             for candidate in group:
                 beat = candidate['beat']
                 if beat not in (covered, covered-1):
                     continue
-                if path and candidate['a'] < path[-1][0]['a']+path[-1][1]:
-                    continue
                 for length in range(low, min(candidate['cap'], total-used)+1):
                     if not _ids(candidate, length):
                         continue
-                    key = used+length, max(covered, beat+1)
+                    previous = _previous(*path[-1]) if path else candidate.get('previous_window')
+                    if not _transition(previous, candidate, length):
+                        continue
+                    key = (used+length, max(covered, beat+1),
+                           (candidate['shot_id'], tuple(_ids(candidate, length))))
                     # Finish as early in the source as possible. Optimizing only
                     # cut count can consume later shots needed by the next voice
                     # window even though an earlier complete plan was feasible.
@@ -206,13 +247,26 @@ def _solve(groups, total, low, high, beat_count, check):
                     if key not in updated or value < updated[key][0]:
                         updated[key] = value, path+((candidate, length),)
         states = updated
-    result = states.get((total, beat_count))
+    result = min((value for (frames, covered, _), value in states.items()
+                  if frames == total and covered == beat_count), key=lambda value:value[0], default=None)
     if result is None:
-        capacity = sum(max(c['cap'] for c in g) for g in groups)
+        capacities = [max(c['cap'] for c in g) for g in groups]
+        upper_capacity = sum(capacities)
+        feasible = max((frames for frames, covered, _ in states if covered == beat_count), default=0)
+        context = {'required_frames': total, 'capacity_frames': feasible,
+                   'candidate_capacity_frames': upper_capacity,
+                   'feasible_frames': feasible,
+                   'required_shots': math.ceil(total/high), 'candidate_shots': len(groups),
+                   'physical_shots': len({c['shot_id'] for g in groups for c in g}),
+                   'capacities': capacities}
+        if incompatible:
+            raise VisualConstraintError('frame_budget',
+                f'Cửa sổ {total/FPS:.2f}s không chia hết thành cảnh {low/FPS:g}–{high/FPS:g}s.', context)
         raise VisualConstraintError('insufficient_distinct_shots',
             f'Cửa sổ cần {total/FPS:.2f}s / ít nhất {math.ceil(total/high)} cảnh khác nhau; '
-            f'có {len(groups)} cảnh nguồn phù hợp, tối đa {capacity/FPS:.2f}s theo setting. '
-            'Không chia một cảnh nguồn thành A/B hoặc lấy cảnh khác tình huống để bù.')
+            f'có {len(groups)} đoạn dẫn chứng phù hợp, lập được tối đa {feasible/FPS:.2f}s theo setting. '
+            'Không chia một cảnh nguồn thành A/B hoặc lấy cảnh khác tình huống để bù.',
+            context)
     return result[1]
 
 
@@ -228,7 +282,11 @@ def plan(project, logical, check=lambda: None):
         try:
             path = _solve(groups, round((end-start)*FPS), low, high, len(beats), check)
         except VisualConstraintError as exc:
-            raise VisualConstraintError(exc.code, f"{rows[0]['id']} · {start:.2f}–{end:.2f}s: {exc.detail}") from None
+            context = dict(exc.context)
+            context.update(window_id=rows[0]['id'], window_start=start,
+                           window_end=end,
+                           row_ids=[r['id'] for r in rows])
+            raise VisualConstraintError(exc.code, f"{rows[0]['id']} · {start:.2f}–{end:.2f}s: {exc.detail}", context) from None
         cursor = round(start*FPS)
         for candidate, length in path:
             a = candidate['a']
@@ -241,7 +299,7 @@ def plan(project, logical, check=lambda: None):
                              evidence_segments=candidate['segment_ids'], reason=candidate['reason']))
             cursor += length
         floor = path[-1][0]['a']+path[-1][1]
-        last_shot = path[-1][0]['shot_id']
+        last_shot = _previous(*path[-1])
         visual_beats.append(dict(window_id=rows[0]['id'], start=start, end=end,
                                  text=' '.join(r.get('narration', '') for r in rows).strip(),
                                  evidence_ids=sorted(set(i for beat in beats for i in beat['ids'])),
@@ -275,11 +333,13 @@ def validate(project, logical, manifest):
         shot = indexed.get(c.get('shot_id'))
         if not shot or not shot['a'] <= a < b <= shot['b'] or not low <= y-x <= high:
             raise VisualConstraintError('cut_bounds', 'Cảnh không thuộc một shot thật hoặc vượt khoảng thời lượng.')
-        if a < source_end or c['shot_id'] == last:
+        candidate = dict(a=a, shot_id=c['shot_id'],
+                         cue_spans=[(i,a,b) for i in c.get('evidence_ids',[])])
+        if a < source_end or not _transition(last, candidate, b-a):
             raise VisualConstraintError('same_shot', 'Hai cảnh liên tiếp là chia đôi cùng cảnh nguồn hoặc đảo/lặp nguồn.')
         if not c.get('evidence_ids'):
             raise VisualConstraintError('evidence', 'Cảnh thiếu dẫn chứng.')
-        source_end, last = b, c['shot_id']
+        source_end, last = b, dict(end=b, shot_id=c['shot_id'], evidence_ids=c['evidence_ids'])
     if cursor != round(logical[-1]['end']*FPS):
         raise VisualConstraintError('duration', 'Tổng lịch hình phải bằng lịch thoại đã khóa.')
     floor, last = 0, None
@@ -302,7 +362,8 @@ def validate(project, logical, manifest):
             assigned.add(cut['id'])
         if covered != set(range(len(beats))):
             raise VisualConstraintError('beat_coverage', 'Lịch hình bỏ mất một diễn biến dẫn chứng trong lời kể.')
-        floor, last = round(group[-1]['source_end']*FPS), group[-1]['shot_id']
+        floor = round(group[-1]['source_end']*FPS)
+        last = dict(end=floor, shot_id=group[-1]['shot_id'], evidence_ids=group[-1]['evidence_ids'])
     if len(assigned) != sum(c['kind'] != 'hook' for c in manifest['clips']):
         raise VisualConstraintError('window', 'Có cảnh ngoài các cửa sổ dẫn chứng đã khóa.')
 
@@ -315,7 +376,7 @@ def apply(project, timeline, strict=False, check=lambda: None):
     try:
         fingerprint = signature(project, logical)
         if cached.get('status') == 'blocked' and cached.get('fingerprint') == fingerprint:
-            raise VisualConstraintError(cached['code'], cached['detail'])
+            raise VisualConstraintError(cached['code'], cached['detail'], cached.get('context'))
         if cached.get('status') == 'ready' and cached.get('fingerprint') == fingerprint:
             # Exact generated manifests are immutable to API clients; avoid
             # repeating the solver during polling/preview.
@@ -326,6 +387,7 @@ def apply(project, timeline, strict=False, check=lambda: None):
     except VisualConstraintError as exc:
         project['visual_edit'] = dict(version=VERSION, status='blocked', code=exc.code,
                                       detail=exc.detail, message=str(exc),
+                                      context=copy.deepcopy(exc.context),
                                       fingerprint=signature(project, logical))
         if strict:
             raise

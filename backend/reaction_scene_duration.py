@@ -16,8 +16,10 @@ def instructions(settings):
         return ''
     low, high = bounds
     return (f'\nVISUAL CUT DURATION: the final independent picture edit requires {low:g}–{high:g} '
-            'seconds per real source shot, excluding the separately configured hook. '
+            'seconds per evidenced picture excerpt, excluding the separately configured hook. '
             'Do not fake cuts by dividing one continuous shot into adjacent pieces. '
+            'Distinct cited developments inside a continuous bodycam shot may use non-overlapping '
+            'excerpts only with a real skipped source gap, not contiguous A/B halves. '
             'The selections below are logical evidence/audio ranges, not final picture cuts. '
             'Evidence and complete exchanges take '
             'priority, then chapter coverage and total duration, then scene length. Select events '

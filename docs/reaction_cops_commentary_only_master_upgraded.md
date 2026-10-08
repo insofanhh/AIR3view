@@ -258,21 +258,29 @@ THỜI LƯỢNG CẢNH — TÙY CHỌN CỦA AIR3VIEW
 - SCENE_DURATION_MODE mặc định là auto: giữ quy trình chọn và dựng hiện tại.
   Khi mode=range, tool cung cấp SCENE_MIN_SECONDS và SCENE_MAX_SECONDS (1–25).
   Mỗi visual cut cuối cùng phải nằm trong khoảng này theo frame 30 fps, lấy từ
-  một shot nguồn thật khác shot liền trước. Không chia đôi một shot rồi nối A/B.
+  một đoạn nguồn có dẫn chứng. Không chia đôi một shot rồi nối A/B sát nhau.
+  Với bodycam liên tục, hai đoạn cùng shot chỉ được dùng khi dẫn chứng cue
+  khác nhau, không chồng nguồn và có khoảng nguồn bỏ qua ít nhất 0,5 giây;
+  đó là hai diễn biến trích riêng, không được gọi là hai góc máy khác nhau.
   “Cảnh hình” không phải cue phụ đề, selection dẫn chứng hay một commentary;
   hook có thời lượng riêng và không chịu khoảng này.
 - Chọn diễn biến và bằng chứng trước, điều chỉnh ranh giới cảnh sau. Thứ tự
   ưu tiên: chứng cứ đúng → hiểu đủ hội thoại/diễn biến → chương quan trọng →
-  thời lượng tổng. Lịch hình riêng kiểm tra khoảng cảnh bắt buộc trước render;
+  thời lượng tổng. Lịch hình riêng kiểm tra sức chứa trước khi viết/khóa lời;
   không chia đều một đoạn nguồn rồi coi đó là nhiều chuyển cảnh thật.
 - Chỉ ghép cue liền kề sạch, cùng diễn biến; không vượt lời dẫn nguồn, lời
   chưa rõ vai trò, sự kiện mới hoặc khoảng nghỉ lớn hơn 1,5 giây để lấp cảnh.
   Lịch âm thanh/dẫn chứng ưu tiên cue trọn vẹn, giữ lượt nói và cặp hỏi–đáp;
   lịch hình độc lập để đổi shot mà không cắt đứt audio, phụ đề hoặc ý nghĩa.
 - Range là ràng buộc cảnh hình; selection dẫn chứng có thể dài hơn để hiểu
-  trọn trao đổi. Nếu nguồn chỉ có một shot hoặc không đủ shot cùng dẫn chứng,
-  báo cụ thể cửa sổ thiếu trước tạo giọng/render; không tự lấy cảnh khác vụ việc,
-  kéo voice hay render sai setting. Cho người dùng tăng khoảng hoặc dùng auto.
+  trọn trao đổi. Khi thiếu hình, trước hết chọn lại đoạn cùng dẫn chứng hoặc
+  gộp cửa sổ full review lân cận có cue chung, tối đa 25 giây. Nếu vẫn thiếu ít,
+  cân riêng cửa sổ AI theo sức chứa hình rồi viết/kiểm chứng lại lời theo đủ
+  cue đã giữ; không lược thoại nhân vật. Tổng rút ngắn không quá 10% hoặc 5 giây
+  của lịch ban đầu (lấy ngưỡng lớn hơn), không giảm cửa sổ quá 35%. Giữ nguyên
+  setting đầu vào, giọng/tốc độ và các đoạn đã đạt; ghi lại mọi lần cân.
+  Nếu không đủ để cân trong giới hạn, báo thiếu trước TTS/render; không lấy
+  cảnh khác vụ việc, kéo voice hoặc xuất sai khoảng. Cho tăng khoảng/dùng auto.
   Cửa sổ commentary vẫn tối đa 25 giây; không thêm commentary để đạt khoảng.
   Xuất theo phần có thể cắt một cảnh ở mép file; đó không phải shot nguồn mới.
 - Chia footage không tạo thêm commentary. Không lặp cảnh, đệm im lặng,

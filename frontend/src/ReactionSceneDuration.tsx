@@ -36,7 +36,7 @@ export function ReactionSceneDuration({settings,onChange}:Props) {
         value={high} onChange={value=>onChange({reaction_scene_max_seconds:value,reaction_scene_min_seconds:Math.min(low,value)})}/></label>
     </div>}
     <p>Cảnh hình là đoạn của một shot nguồn thật; một commentary có thể đọc xuyên nhiều cảnh ngắn. Hook dùng thời lượng riêng. {ranged
-      ?'Mỗi cảnh hình phải đạt khoảng đã chọn ở 30 fps và thuộc một cảnh nguồn khác cảnh liền trước. Không chia đôi một cảnh rồi nối lại. Giữ lịch thoại/phụ đề, số commentary và tốc độ giọng; đổi khoảng chỉ lập lại lịch hình. Nếu thiếu cảnh dẫn chứng phù hợp, tool báo rõ để điều chỉnh. Xuất theo phần có thể cắt ngắn cảnh tại mép file.'
+      ?'Mỗi cảnh hình phải đạt khoảng đã chọn ở 30 fps. Không chia đôi một cảnh rồi nối lại; các diễn biến riêng trong cùng góc quay chỉ được chọn khi có dẫn chứng khác và khoảng nguồn được bỏ qua. Tool kiểm tra hình trước khi viết lời; nếu thiếu ít, tự cân cửa sổ và viết lại riêng đoạn bị ảnh hưởng, giữ giọng/tốc độ. Đổi khoảng ưu tiên dùng lại lời và audio đã đạt. Nếu nguồn không đủ để cân an toàn, tool báo rõ. Xuất theo phần có thể cắt ngắn cảnh tại mép file.'
       :settings.reaction_commentary_count===0?'Full review dùng hình 4–6 giây khi đủ nguồn; ranh giới có thể ngắn hơn. Cửa sổ voice được gộp để giữ mạch kể và tốc độ.':'Chọn diễn biến và lời bình theo quy trình Reaction COPS hiện tại.'}</p>
   </fieldset>;
 }

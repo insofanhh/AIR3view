@@ -331,6 +331,9 @@ def build(project, ask_ai, folder, report, check):
     raw = _fill_from_full_source(selection_project,draft,blocks,hook,budget,full_review=True)
     raw['synopsis'] = outline['central_question']
     locked = validate_plan(prepare(raw,project),project,check_text=False)
+    from .reaction_visual_recovery import reserve
+    locked = reserve(locked,project,report,check)
+    budget = project.get('reaction_duration_budget') or budget
     result = write(locked,project,outline,ask_ai,folder,report,check)
     result = validate_plan(result,project)
     project['reaction_review_outline'] = outline
@@ -375,7 +378,7 @@ def validate(plan, project, check_text=True):
             raise ValueError('Hook full review có lời kể sai quy tắc hoặc ngôn ngữ.')
 
 
-def write(plan, project, outline, ask_ai, folder, report, check):
+def write(plan, project, outline, ask_ai, folder, report, check, *, only_ids=None):
     """Write/check small independent windows; resume approved lines only."""
     from .hook_policy import slots, set_text
     from .reaction_cops import _evidence_ids, commentary_source_text
@@ -384,6 +387,8 @@ def write(plan, project, outline, ask_ai, folder, report, check):
     from .narration_language import wrong_language
     from pydantic import ValidationError
     rows = [s for s in slots(plan) if s['narration'].strip()]
+    if only_ids is not None:
+        rows = [s for s in rows if s['id'] in only_ids]
     eligible = {c['id']:c for c,r in zip(project['reaction_cues'],project['source_speech']['items'])
                 if r['role']=='participant' and r['confidence']>=.7}
     rate = speech_rate(project)

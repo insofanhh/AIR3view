@@ -1,6 +1,7 @@
 # Kế hoạch thời lượng cảnh và dẫn chứng hình Reaction COPS
 
 Ngày: 2026-10-08. Kế hoạch đã được triển khai cho chế độ range; các phần dưới lưu phân tích ban đầu.
+Quy tắc phục hồi mới thay thế giới hạn một cut/shot được mô tả trong [REACTION_VISUAL_RECOVERY.vi.md](REACTION_VISUAL_RECOVERY.vi.md). Các mục kiểm chứng dưới đây lưu trạng thái v0.1.19.
 Yêu cầu: cảnh cắt theo setting; nhiều cảnh cùng củng cố lập luận và diễn tả đủ nội dung đoạn voice AI; giữ quy trình tạo output đã chạy được ở v0.1.18.
 
 ## Triển khai và cách kiểm chứng

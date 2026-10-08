@@ -130,6 +130,33 @@ def test_measured_voice_extends_only_its_window_without_touching_cuts():
         contract_check(result)
 
 
+def test_long_voice_cannot_extend_into_an_unbuildable_picture_window(monkeypatch):
+    from backend.reaction_commentary import extend_to_audio
+    from backend.reaction_visual import VisualConstraintError
+    # Import before patching: recovery owns a direct reference to the real
+    # solver; do not let this test's stub become its module-level dependency.
+    from backend import reaction_visual_recovery
+    p=project()
+    plan=planned(p)
+    for r in plan['selections']:
+        r['narration']=''
+        r.pop('commentary_span',None)
+    plan['selections'][0].update(narration='The exchange changes. The question remains unresolved.',commentary_span=4)
+    ready(p,plan)
+    p['shots']=[dict(start=0,end=p['metadata']['duration'])]
+    before=copy.deepcopy(p)
+    calls=[]
+    def unavailable(candidate,*args):
+        calls.append(candidate['story_plan']['selections'][0]['commentary_span'])
+        raise VisualConstraintError('insufficient_distinct_shots','No matching pictures')
+    monkeypatch.setattr('backend.reaction_visual.plan',unavailable)
+    diagnostics=[]
+    assert extend_to_audio(p,p['narrations'][0],10.5,diagnostics) is None
+    assert calls and min(calls)==6
+    assert any('insufficient_distinct_shots' in d for d in diagnostics)
+    assert p==before
+
+
 def test_voice_can_cross_cuts_and_original_subtitles_return_when_it_ends():
     from backend.timeline import build_story
     from backend.providers import voice_hash
@@ -162,6 +189,11 @@ def test_full_planner_writer_contract_preserves_short_cuts(monkeypatch, tmp_path
     from backend.plan_first import contract_check
     p = project()
     p['settings']['language'] = language
+    # A separate synthetic camera shot for every verified exchange. The new
+    # pre-writing visual reserve must run rather than requiring a media file.
+    p['shots']=[dict(start=c['start'],end=p['reaction_cues'][i+1]['start']
+                     if i+1<len(p['reaction_cues']) else p['metadata']['duration'])
+                for i,c in enumerate(p['reaction_cues'])]
     monkeypatch.setattr(store, 'project_dir', lambda _: tmp_path)
     calls = []
     def ai(prompt, _frames, _settings, _folder, _check, schema):

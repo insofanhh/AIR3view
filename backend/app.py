@@ -63,6 +63,31 @@ def prepare_job_story(project, kind, report, check):
     return providers.analyze(project, report, check)
 
 
+def prepare_visual_stage(project, report, check, *, repair=False):
+    """Run the strict visual preflight, with one bounded script repair.
+
+    A visual shortage is deterministic and must not be retried as a generic
+    job error.  During ``all``/``voice`` there is still a chance to rewrite
+    only the affected commentary before TTS.  Render/export deliberately keep
+    the strict path so an already generated voice is never silently detached
+    from its approved script.
+    """
+    from .reaction_visual import prepare as prepare_visual, VisualConstraintError
+    from .reaction_visual_recovery import recover
+    try:
+        return prepare_visual(project, report, check)
+    except VisualConstraintError as exc:
+        if not repair:
+            raise
+        folder = store.project_dir(project['id'])
+        with stage_slot(AI_LIMIT, check):
+            candidate = recover(project, exc, providers.ask_ai, folder, report, check)
+        # Verify the entire new edit before publishing changed script/audio.
+        # prepare() saves the candidate only when it has finished validation.
+        report(4, 'Đã sửa riêng cửa sổ thiếu hình; kiểm tra lại trước khi tạo giọng…')
+        return prepare_visual(candidate, report, check)
+
+
 def work():
     while not STOP.is_set():
         try:
@@ -118,8 +143,8 @@ def work():
                     with stage_slot(AI_LIMIT, check):
                         project = providers.localize(project, report, check)
                 if kind in ('voice', 'language', 'all') or kind.startswith('voice:'):
-                    from .reaction_visual import prepare as prepare_visual
-                    project = prepare_visual(project, report, check)
+                    project = prepare_visual_stage(project, report, check,
+                                                   repair=kind in ('voice', 'all', 'language'))
                     if kind == 'all' and not project['narrations']:
                         from .story import source_led
                         if source_led(project):
@@ -145,8 +170,7 @@ def work():
                             project['settings']=Settings.model_validate(project['settings']).model_dump()
                             store.save(project)
                         if kind in ('render', 'preview', 'export'):
-                            from .reaction_visual import prepare as prepare_visual
-                            project = prepare_visual(project, report, check)
+                            project = prepare_visual_stage(project, report, check)
                             project = providers.prepare_render_audio(project, report, check)
                         if project['settings'].get('subtitle_highlight', True):
                             build(project, strict=True)

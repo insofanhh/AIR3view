@@ -88,7 +88,7 @@ def probe(path):
         return {'duration': duration, 'width': video.width if video else 0, 'height': video.height if video else 0, 'fps': float(video.average_rate or 30) if video else 0, 'has_audio': audio is not None}
 
 
-def ensure_shots(project, report=lambda *args: None, check=lambda: None):
+def ensure_shots(project, report=lambda *args: None, check=lambda: None, *, persist=True):
     """Reuse persisted pixel-detected shots, including projects made before this edit."""
     if project.get('shots'):
         from .reaction_visual import shots, VisualConstraintError
@@ -109,7 +109,8 @@ def ensure_shots(project, report=lambda *args: None, check=lambda: None):
     ranges = [(a.get_seconds(), b.get_seconds()) for a, b in scenes]
     project['shots'] = [{'start': a, 'end': b} for a, b in ranges] or [
         {'start': 0, 'end': project['metadata']['duration']}]
-    store.save(project)
+    if persist:
+        store.save(project)
     return project['shots']
 
 

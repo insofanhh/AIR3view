@@ -958,6 +958,9 @@ def plan_reaction(project, report, check):
         candidate['source_policy_version']=SOURCE_VERSION
         candidate['story_bridge_version']=BRIDGE_VERSION
         report(91,'Viết COMMENTARY theo cue hiện trường đã khóa…')
+        from .reaction_visual_recovery import reserve
+        locked = reserve(locked,candidate,report,check)
+        budget = candidate.get('reaction_duration_budget') or budget
         result=write_scheduled(locked,candidate,providers.ask_ai,folder,report,check,locked=True)
         from .reaction_dubbing import active as dubbing_active, write as write_dubs, validate as validate_dubs
         if dubbing_active(settings):
@@ -1034,6 +1037,7 @@ def plan_reaction(project, report, check):
     candidate.update(story_plan=result,plan_fingerprint=fingerprint,script_language=settings['language'],
                      title_language=settings['language'],exports=[],preview_exports=[])
     candidate['duration_plan']={**duration_plan_manifest(result,candidate),'status':'ready',
+        'visual_budget':copy.deepcopy(candidate.get('visual_budget')),
         'reaction_budget': {**budget, 'actual_seconds': round(actual_seconds, 3),
                             'actual_original_ratio':round(measured_retention['actual_ratio'],4),
                             'requested_commentary_count':desired_commentary,
